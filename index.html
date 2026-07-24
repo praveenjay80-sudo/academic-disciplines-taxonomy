@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Academic Disciplines — Explorer</title>
+<title>Maths-Physics-CS Knowledge Explorer</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   :root {
@@ -100,6 +100,11 @@
   .reading-item .title { color: var(--text); font-weight: 600; font-size: 0.88em; }
   .reading-item .meta { color: var(--muted); font-size: 0.78em; margin-top: 2px; }
   .reading-item .why { color: var(--text); font-size: 0.82em; margin-top: 4px; }
+  .reading-item .answers { color: var(--muted); font-size: 0.8em; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
+  .reading-item .answers-label { color: var(--accent2); font-weight: 600; }
+  .reading-item .locator { color: var(--muted); font-size: 0.76em; margin-top: 2px; }
+  .reading-item .locator a { color: var(--accent); text-decoration: none; }
+  .reading-item .locator a:hover { text-decoration: underline; }
   .paradigm-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
     padding: 14px 16px; margin-bottom: 12px;
@@ -115,12 +120,38 @@
   .empty-state { color: var(--muted); text-align: center; padding: 80px 20px; }
   .empty-state h2 { color: var(--text); margin-bottom: 8px; }
   .cache-badge { color: var(--green); font-size: 0.72em; }
+  .field-tabs {
+    display: flex; gap: 4px; background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 0 24px; overflow-x: auto;
+  }
+  .field-tab {
+    padding: 10px 16px; cursor: pointer; color: var(--muted); font-size: 0.85em;
+    border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  .field-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .field-tab.disabled { color: #484f58; cursor: not-allowed; }
+  .field-tree-stats { color: var(--muted); font-size: 0.72em; margin-bottom: 8px; }
+  .ftree-node { padding: 1px 0; }
+  .ftree-row { display: flex; align-items: center; padding: 2px 4px; gap: 4px; cursor: pointer; border-radius: 4px; }
+  .ftree-row:hover { background: rgba(88,166,255,0.08); }
+  .ftree-row.selected { background: rgba(88,166,255,0.16); }
+  .ftree-toggle { width: 12px; text-align: center; color: var(--accent); font-size: 0.6em; transition: transform 0.1s; flex-shrink: 0; }
+  .ftree-toggle.collapsed { transform: rotate(-90deg); }
+  .ftree-label { font-size: 0.82em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ftree-children { display: none; }
+  .ftree-children.open { display: block; }
+  .ftree-hidden { display: none !important; }
+  .questions-block { margin-bottom: 20px; }
+  .questions-block h4 { color: var(--purple); font-size: 0.9em; margin-bottom: 8px; }
+  .question-item { margin-bottom: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
+  .question-item .q { color: var(--text); font-weight: 600; font-size: 0.86em; }
+  .question-item .why { color: var(--muted); font-size: 0.78em; margin-top: 2px; }
 </style>
 </head>
 <body>
 
 <div class="header">
-  <h1>📚 Academic Disciplines — Explorer</h1>
+  <h1>📚 Maths-Physics-CS Knowledge Explorer</h1>
   <div class="sub">Grounded, generated on demand — sub-disciplines, leveled reading lists, and theoretical paradigms for any topic</div>
 </div>
 
@@ -129,33 +160,40 @@
   <input type="password" id="apiKey" placeholder="sk-or-v1-..." />
   <label>Model:</label>
   <select id="model">
-    <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
-    <option value="openai/gpt-4o">GPT-4o</option>
-    <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
-    <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B</option>
-    <option value="google/gemini-flash-1.5">Gemini Flash 1.5</option>
-    <option value="deepseek/deepseek-v4-flash">DeepSeek V4 Flash*</option>
-    <option value="minimax/minimax-m3">MiniMax M3*</option>
+    <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+    <option value="deepseek/deepseek-v4-flash">DeepSeek V4 Flash</option>
     <option value="__custom__">Custom model ID…</option>
   </select>
   <input type="text" id="modelCustom" class="model-custom" placeholder="provider/model-id" style="display:none;" />
   <span style="flex:1"></span>
-  <span class="muted" style="font-size:0.7em" title="* best-guess OpenRouter slugs — if the call fails, use Custom model ID with the exact slug from openrouter.ai/models">Key stored in browser only · Never sent to any server</span>
+  <span class="muted" style="font-size:0.7em" title="If a model fails with 'returned no content', double-check its exact slug at openrouter.ai/models and use Custom model ID.">Key stored in browser only · Never sent to any server</span>
 </div>
+
+<div class="field-tabs" id="fieldTabs"></div>
 
 <div class="main">
   <div class="sidebar">
-    <h3>Explore a topic</h3>
-    <div class="topic-input-row">
-      <input type="text" id="topicInput" placeholder="Type any topic…" />
-      <button class="btn btn-primary btn-small" onclick="onTopicSubmit()">Go</button>
+    <div id="exploreSidebar">
+      <h3>Explore a topic</h3>
+      <div class="topic-input-row">
+        <input type="text" id="topicInput" placeholder="Type any topic…" />
+        <button class="btn btn-primary btn-small" onclick="onTopicSubmit()">Go</button>
+      </div>
+
+      <h3>Start here</h3>
+      <div class="chip-row" id="rootChips"></div>
+
+      <h3>Recently explored</h3>
+      <div class="recent-list" id="recentList"><div class="empty-hint">Nothing explored yet</div></div>
     </div>
 
-    <h3>Start here</h3>
-    <div class="chip-row" id="rootChips"></div>
-
-    <h3>Recently explored</h3>
-    <div class="recent-list" id="recentList"><div class="empty-hint">Nothing explored yet</div></div>
+    <div id="fieldTreeSidebar" style="display:none;">
+      <div class="topic-input-row" style="margin-bottom:8px;">
+        <input type="text" id="fieldTreeFilter" placeholder="Filter…" oninput="onFieldTreeFilter()" />
+      </div>
+      <div class="field-tree-stats" id="fieldTreeStats"></div>
+      <div id="fieldTreeContainer"></div>
+    </div>
   </div>
 
   <div class="content" id="content">
@@ -173,6 +211,23 @@
 const ROOT_DOMAINS = ['Humanities', 'Social sciences', 'Natural sciences', 'Formal sciences', 'Applied sciences'];
 let currentPath = [];   // array of node names, e.g. ['Natural sciences', 'Physics']
 let currentNode = null; // the generated record for currentPath.join(' > ')
+
+// ============================================================
+// REAL STRUCTURED TAXONOMIES (Mathematics/Physics/Computer Science)
+// These trees are NOT LLM-generated -- they're built once, offline, from
+// MSC2020 (Mathematics), PhySH (Physics), and ACM CCS (Computer Science) --
+// see scripts/build_real_trees.py. The LLM's only job for these nodes is
+// the key-questions + reading-list generation, grounded the same way as
+// Explore mode. Philosophy is a fourth planned tab (PhilPapers taxonomy)
+// pending an API key.
+// ============================================================
+const FIELD_TREES = {
+  math: { label: 'Mathematics', file: 'math-tree.json', data: null },
+  physics: { label: 'Physics', file: 'physics-tree.json', data: null },
+  'cs-theory': { label: 'Computer Science', file: 'cs-tree.json', data: null },
+};
+let activeMainTab = 'explore'; // 'explore' | 'math' | 'physics' | 'cs-theory'
+let fieldTreeSelectedPath = null; // array of names within the active field tree
 
 // ============================================================
 // INDEXEDDB
@@ -274,6 +329,189 @@ document.getElementById('topicInput').addEventListener('keydown', (e) => {
 });
 
 // ============================================================
+// FIELD TABS (Mathematics / Physics / Computer Science / Explore)
+// ============================================================
+function renderFieldTabs() {
+  const container = document.getElementById('fieldTabs');
+  const tabs = [
+    { key: 'explore', label: '🔍 Explore any topic' },
+    { key: 'math', label: 'Mathematics' },
+    { key: 'physics', label: 'Physics' },
+    { key: 'cs-theory', label: 'Computer Science' },
+    { key: 'philosophy', label: 'Philosophy', disabled: true },
+  ];
+  container.innerHTML = '';
+  for (const t of tabs) {
+    const el = document.createElement('div');
+    el.className = 'field-tab' + (t.key === activeMainTab ? ' active' : '') + (t.disabled ? ' disabled' : '');
+    el.textContent = t.label;
+    if (t.disabled) {
+      el.title = 'Needs a free PhilPapers API key (philpapers.org) — not wired up yet.';
+    } else {
+      el.onclick = () => switchMainTab(t.key);
+    }
+    container.appendChild(el);
+  }
+}
+
+async function switchMainTab(tab) {
+  activeMainTab = tab;
+  renderFieldTabs();
+  const exploreSidebar = document.getElementById('exploreSidebar');
+  const fieldSidebar = document.getElementById('fieldTreeSidebar');
+  if (tab === 'explore') {
+    exploreSidebar.style.display = '';
+    fieldSidebar.style.display = 'none';
+    document.getElementById('content').innerHTML = currentNode && !currentNode.isStaticTree
+      ? document.getElementById('content').innerHTML
+      : '<div class="empty-state"><h2>Pick a starting point</h2><p>Type a topic, or click one of the domains on the left.</p></div>';
+    return;
+  }
+  exploreSidebar.style.display = 'none';
+  fieldSidebar.style.display = '';
+  document.getElementById('fieldTreeFilter').value = '';
+  await loadFieldTree(tab);
+  renderFieldTreeSidebar(tab);
+  document.getElementById('content').innerHTML = `<div class="empty-state"><h2>${escHtml(FIELD_TREES[tab].label)}</h2><p>Click any topic on the left to see its key questions and reading list.</p></div>`;
+}
+
+async function loadFieldTree(key) {
+  const field = FIELD_TREES[key];
+  if (field.data) return;
+  const resp = await fetch(field.file);
+  field.data = await resp.json();
+}
+
+function renderFieldTreeSidebar(key) {
+  const field = FIELD_TREES[key];
+  const container = document.getElementById('fieldTreeContainer');
+  container.innerHTML = '';
+  for (const node of field.data) {
+    container.appendChild(renderFieldTreeNode(key, node, [node.n], 0));
+  }
+  document.getElementById('fieldTreeStats').textContent = countFieldNodes(field.data) + ' topics — from ' + fieldSourceName(key);
+}
+
+function fieldSourceName(key) {
+  if (key === 'math') return 'MSC2020 (AMS/zbMATH)';
+  if (key === 'physics') return 'PhySH (American Physical Society)';
+  if (key === 'cs-theory') return 'ACM CCS (full Computing Classification System)';
+  return '';
+}
+
+function countFieldNodes(nodes) {
+  return nodes.reduce((sum, n) => sum + 1 + countFieldNodes(n.c || []), 0);
+}
+
+function renderFieldTreeNode(fieldKey, node, path, depth) {
+  const div = document.createElement('div');
+  div.className = 'ftree-node';
+  div.dataset.name = node.n.toLowerCase();
+
+  const row = document.createElement('div');
+  row.className = 'ftree-row';
+  row.style.paddingLeft = (4 + depth * 14) + 'px';
+
+  const children = node.c || [];
+  const hasChildren = children.length > 0;
+
+  const toggle = document.createElement('span');
+  toggle.className = 'ftree-toggle collapsed';
+  toggle.textContent = '▼';
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    const childContainer = div.querySelector(':scope > .ftree-children');
+    if (childContainer) {
+      const isOpen = childContainer.classList.toggle('open');
+      toggle.classList.toggle('collapsed', !isOpen);
+    }
+  };
+  if (!hasChildren) toggle.style.visibility = 'hidden';
+  row.appendChild(toggle);
+
+  const label = document.createElement('span');
+  label.className = 'ftree-label';
+  label.textContent = node.n;
+  row.appendChild(label);
+
+  row.onclick = () => {
+    document.querySelectorAll('.ftree-row.selected').forEach(r => r.classList.remove('selected'));
+    row.classList.add('selected');
+    selectFieldTreeNode(fieldKey, path);
+  };
+  div.appendChild(row);
+
+  if (hasChildren) {
+    const childContainer = document.createElement('div');
+    childContainer.className = 'ftree-children';
+    for (const child of children) {
+      childContainer.appendChild(renderFieldTreeNode(fieldKey, child, [...path, child.n], depth + 1));
+    }
+    div.appendChild(childContainer);
+  }
+
+  return div;
+}
+
+function onFieldTreeFilter() {
+  const query = document.getElementById('fieldTreeFilter').value.toLowerCase().trim();
+  const allNodes = document.querySelectorAll('.ftree-node');
+  if (!query) {
+    allNodes.forEach(n => {
+      n.classList.remove('ftree-hidden');
+      const tc = n.querySelector(':scope > .ftree-children');
+      const tg = n.querySelector(':scope > .ftree-row > .ftree-toggle');
+      if (tc) { tc.classList.remove('open'); if (tg) tg.classList.add('collapsed'); }
+    });
+    return;
+  }
+  allNodes.forEach(n => {
+    const tc = n.querySelector(':scope > .ftree-children');
+    const tg = n.querySelector(':scope > .ftree-row > .ftree-toggle');
+    if (tc) { tc.classList.add('open'); if (tg) tg.classList.remove('collapsed'); }
+  });
+  allNodes.forEach(n => n.classList.add('ftree-hidden'));
+  allNodes.forEach(n => {
+    if ((n.dataset.name || '').includes(query)) {
+      n.classList.remove('ftree-hidden');
+      let parent = n.parentElement;
+      while (parent && parent.id !== 'fieldTreeContainer') {
+        if (parent.classList && parent.classList.contains('ftree-node')) parent.classList.remove('ftree-hidden');
+        parent = parent.parentElement;
+      }
+    }
+  });
+}
+
+async function selectFieldTreeNode(fieldKey, path) {
+  fieldTreeSelectedPath = path;
+  document.querySelectorAll('.ftree-row.selected').forEach(r => r.classList.remove('selected'));
+  const fieldLabel = FIELD_TREES[fieldKey].label;
+  currentPath = [fieldLabel, ...path];
+  activeTab = 'reading';
+  renderLoading();
+
+  const key = pathKey(currentPath);
+  let record = await dbGet(key);
+  if (!record) {
+    const topic = path[path.length - 1];
+    let grounding = null;
+    try { grounding = await fetchWikipediaGrounding(topic); } catch (e) { /* optional */ }
+    record = {
+      path: key, name: topic, description: '', children: [],
+      groundingSource: grounding, generatedAt: Date.now(),
+      keyQuestions: null, keyQuestionsGenerated: false, questionReadingLists: {},
+      researchQuestions: null, researchQuestionsGenerated: false, researchQuestionLiterature: {},
+      paradigms: null, paradigmsGenerated: false,
+      isStaticTree: true, fieldKey: fieldKey,
+    };
+    await dbPut(record);
+  }
+  currentNode = record;
+  renderNode(false);
+}
+
+// ============================================================
 // NAVIGATION
 // ============================================================
 async function navigateTo(path) {
@@ -292,6 +530,14 @@ function pathKey(path) {
 
 // ============================================================
 // LOAD / GENERATE
+// Split into three independent calls (children / reading list /
+// paradigms) instead of one combined call: children generate
+// immediately on navigation (small, fast — that's the primary
+// browsing path), reading list and paradigms only generate when
+// you actually open those tabs. This also keeps each call focused
+// on one consistent level of the hierarchy instead of asking the
+// model to juggle tree structure and a 9-section reading list at
+// once, which was causing sibling items at mixed depths.
 // ============================================================
 async function loadOrRenderNode() {
   const key = pathKey(currentPath);
@@ -302,19 +548,75 @@ async function loadOrRenderNode() {
     renderNode(true);
     return;
   }
-  await generateNode();
+  await generateChildren();
 }
 
 async function regenerateCurrentNode() {
-  await generateNode();
+  await generateChildren();
 }
 
-async function generateNode() {
+function requireApiKey() {
   const apiKey = document.getElementById('apiKey').value.trim();
   if (!apiKey) {
     renderError('Enter your OpenRouter API key in the settings bar above.');
-    return;
+    return null;
   }
+  return apiKey;
+}
+
+async function callOpenRouter(apiKey, model, prompt, maxTokens) {
+  const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.3,
+      max_tokens: maxTokens,
+    }),
+  });
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`API ${resp.status}: ${errText.substring(0, 300)}`);
+  }
+  const data = await resp.json();
+  const choice = data.choices && data.choices[0];
+  const content = choice && choice.message && choice.message.content;
+  if (!content) {
+    const reason = choice ? choice.finish_reason : 'no choice returned';
+    throw new Error(`Model returned no content (${reason}). If you're using a guessed slug like "DeepSeek V4 Flash*"/"MiniMax M3*", verify the exact model ID at openrouter.ai/models and enter it via "Custom model ID…" if different.`);
+  }
+  const parsed = extractJson(content);
+  if (!parsed) {
+    if (choice.finish_reason === 'length') {
+      throw new Error('Response was cut off before finishing (hit the token limit) — try again, or switch to a model with a larger output window.');
+    }
+    throw new Error('Model did not return valid JSON. Raw response: ' + content.substring(0, 400));
+  }
+  return parsed;
+}
+
+// A node's siblings are its parent's other already-generated children.
+// Passing these into the prompt stops the same real topic from being
+// placed both here and one level deeper under one of its own siblings
+// (e.g. "Complex Analysis" as a direct child of Mathematics AND again
+// as a child of Calculus, a sibling of Complex Analysis) — each node
+// generates in isolation and has no way to know what's already been
+// placed nearby otherwise.
+async function getSiblingNames(path) {
+  if (path.length <= 1) return [];
+  const parent = await dbGet(pathKey(path.slice(0, -1)));
+  if (!parent || !Array.isArray(parent.children)) return [];
+  const currentName = path[path.length - 1];
+  return parent.children.map(c => c.name).filter(n => n !== currentName);
+}
+
+async function generateChildren() {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
   const model = getSelectedModel();
   const topic = currentPath[currentPath.length - 1];
   renderLoading();
@@ -325,45 +627,25 @@ async function generateNode() {
   } catch (e) {
     // grounding is optional — proceed without it
   }
-
-  const prompt = buildPrompt(topic, currentPath, grounding);
+  const siblingNames = await getSiblingNames(currentPath);
 
   try {
-    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + apiKey,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model,
-        messages: [{ role: 'user', content: prompt }],
-        temperature: 0.3,
-        max_tokens: 4000,
-      }),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`API ${resp.status}: ${errText.substring(0, 300)}`);
-    }
-
-    const data = await resp.json();
-    const content = data.choices[0].message.content;
-    const parsed = extractJson(content);
-    if (!parsed) {
-      throw new Error('Model did not return valid JSON. Raw response: ' + content.substring(0, 400));
-    }
-
+    const parsed = await callOpenRouter(apiKey, model, buildChildrenPrompt(topic, currentPath, grounding, siblingNames), 4000);
     const record = {
       path: pathKey(currentPath),
       name: topic,
       description: parsed.description || '',
       children: Array.isArray(parsed.children) ? parsed.children : [],
-      reading_list: parsed.reading_list || {},
-      paradigms: Array.isArray(parsed.paradigms) ? parsed.paradigms : [],
       groundingSource: grounding,
       generatedAt: Date.now(),
+      keyQuestions: null,
+      keyQuestionsGenerated: false,
+      questionReadingLists: {},
+      researchQuestions: null,
+      researchQuestionsGenerated: false,
+      researchQuestionLiterature: {},
+      paradigms: null,
+      paradigmsGenerated: false,
     };
     await dbPut(record);
     currentNode = record;
@@ -373,16 +655,129 @@ async function generateNode() {
   }
 }
 
+async function generateKeyQuestionsForCurrentNode() {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const n = currentNode;
+  renderTabLoading('reading', 'Working out the key questions…');
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildKeyQuestionsPrompt(n.name, currentPath, n.groundingSource), 8000);
+    n.keyQuestions = parsed.key_questions || { beginner: [], intermediate: [], advanced: [] };
+    n.keyQuestionsGenerated = true;
+    n.questionReadingLists = n.questionReadingLists || {};
+    await dbPut(n);
+    renderNode(true);
+  } catch (e) {
+    renderTabError('reading', e.message, 'generateKeyQuestionsForCurrentNode()');
+  }
+}
+
+function questionKey(level, index) {
+  return level + '-' + index;
+}
+
+async function generateReadingListForQuestion(level, index) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const n = currentNode;
+  const q = n.keyQuestions[level][index];
+  const qKey = questionKey(level, index);
+  const target = document.getElementById('qreading-' + qKey);
+  if (target) target.innerHTML = '<div class="loading" style="padding:16px 0">⏳ Building a reading list from prerequisites to current research…</div>';
+
+  const otherQuestions = [];
+  for (const lvl of ['beginner', 'intermediate', 'advanced']) {
+    (n.keyQuestions[lvl] || []).forEach((oq, i) => {
+      if (!(lvl === level && i === index)) otherQuestions.push(oq.question);
+    });
+  }
+
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildQuestionReadingListPrompt(n.name, currentPath, q.question, n.groundingSource, otherQuestions), 24000);
+    n.questionReadingLists[qKey] = { readingList: parsed.reading_list || {}, generated: true };
+    await dbPut(n);
+    renderNode(true);
+  } catch (e) {
+    if (target) target.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div><div style="margin-top:8px"><button class="btn btn-small" onclick="generateReadingListForQuestion(${escAttr(JSON.stringify(level))}, ${index})">Retry</button></div>`;
+  }
+}
+
+async function generateResearchQuestionsForCurrentNode() {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const n = currentNode;
+  renderTabLoading('research', 'Identifying open problems…');
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildResearchQuestionsPrompt(n.name, currentPath, n.groundingSource), 8000);
+    n.researchQuestions = Array.isArray(parsed.research_questions) ? parsed.research_questions : [];
+    n.researchQuestionsGenerated = true;
+    n.researchQuestionLiterature = n.researchQuestionLiterature || {};
+    await dbPut(n);
+    renderNode(true);
+  } catch (e) {
+    renderTabError('research', e.message, 'generateResearchQuestionsForCurrentNode()');
+  }
+}
+
+async function generateLiteratureForResearchQuestion(index) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const n = currentNode;
+  const q = n.researchQuestions[index];
+  const target = document.getElementById('rqlit-' + index);
+  if (target) target.innerHTML = '<div class="loading" style="padding:16px 0">⏳ Finding precise literature for this specific question…</div>';
+
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildResearchLiteraturePrompt(n.name, currentPath, q.question, n.groundingSource), 16000);
+    n.researchQuestionLiterature[index] = { works: Array.isArray(parsed.literature) ? parsed.literature : [], generated: true };
+    await dbPut(n);
+    renderNode(true);
+  } catch (e) {
+    if (target) target.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div><div style="margin-top:8px"><button class="btn btn-small" onclick="generateLiteratureForResearchQuestion(${index})">Retry</button></div>`;
+  }
+}
+
+async function generateParadigmsForCurrentNode() {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const n = currentNode;
+  renderTabLoading('paradigms', 'Generating paradigms…');
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildParadigmsPrompt(n.name, currentPath, n.groundingSource), 4000);
+    n.paradigms = Array.isArray(parsed.paradigms) ? parsed.paradigms : [];
+    n.paradigmsGenerated = true;
+    await dbPut(n);
+    renderNode(true);
+  } catch (e) {
+    renderTabError('paradigms', e.message, 'generateParadigmsForCurrentNode()');
+  }
+}
+
 function getSelectedModel() {
   const sel = document.getElementById('model').value;
   if (sel === '__custom__') {
-    return document.getElementById('modelCustom').value.trim() || 'openai/gpt-4o-mini';
+    return document.getElementById('modelCustom').value.trim() || 'google/gemini-2.5-flash';
   }
   return sel;
 }
 
 // ============================================================
-// WIKIPEDIA GROUNDING (plain-text extract only — never parsed as structure)
+// WIKIPEDIA GROUNDING
+// The LLM is meant to act as a filter/curator over real source material,
+// not a free generator — so this fetches real substance, not decoration:
+//   - fullText: the article's actual prose (all sections, plain text) —
+//     children are extracted from what this text actually discusses.
+//   - citations: real works pulled from the article's own "Further
+//     reading"/"Bibliography"/"References" sections — the reading list
+//     is built from these, not recalled from the model's memory alone.
+// citations parsing is scoped to one well-known list-shaped section per
+// page (not the whole page's arbitrary outline structure), so it doesn't
+// have the same failure mode as the old scrape-and-merge pipeline.
 // ============================================================
 async function fetchWikipediaGrounding(topic) {
   const searchUrl = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(topic)}&format=json&origin=*&srlimit=1`;
@@ -392,58 +787,255 @@ async function fetchWikipediaGrounding(topic) {
   if (!hit) return null;
   const title = hit.title;
 
-  const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exintro&explaintext&titles=${encodeURIComponent(title)}&format=json&origin=*`;
+  const extractUrl = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&explaintext&titles=${encodeURIComponent(title)}&format=json&origin=*`;
   const extractResp = await fetch(extractUrl);
   const extractData = await extractResp.json();
   const pages = extractData?.query?.pages || {};
   const page = Object.values(pages)[0];
-  const extract = page?.extract || '';
-  if (!extract) return null;
+  const fullExtract = page?.extract || '';
+  if (!fullExtract) return null;
+
+  const citations = await fetchWikipediaCitations(title);
 
   return {
     title,
     url: 'https://en.wikipedia.org/wiki/' + encodeURIComponent(title.replace(/ /g, '_')),
-    extract: extract.substring(0, 1500),
+    extract: fullExtract.substring(0, 600),
+    fullText: fullExtract.substring(0, 7000),
+    citations,
   };
 }
 
+async function fetchWikipediaCitations(title) {
+  const CITATION_HEADINGS = ['further reading', 'bibliography', 'selected bibliography', 'references', 'notes and references', 'sources', 'works cited'];
+  try {
+    const parseUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&format=json&prop=text&origin=*`;
+    const resp = await fetch(parseUrl);
+    const data = await resp.json();
+    const html = data?.parse?.text?.['*'];
+    if (!html) return [];
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const headings = doc.querySelectorAll('.mw-heading, h2, h3');
+    const results = [];
+    for (const h of headings) {
+      const headingEl = h.matches('h2, h3') ? h : h.querySelector('h2, h3');
+      if (!headingEl) continue;
+      const headingText = headingEl.textContent.trim().toLowerCase();
+      if (!CITATION_HEADINGS.some(c => headingText.includes(c))) continue;
+      let node = h.nextElementSibling;
+      while (node && !node.matches('.mw-heading, h2, h3')) {
+        const items = node.tagName === 'LI' ? [node] : Array.from(node.querySelectorAll ? node.querySelectorAll('li') : []);
+        for (const li of items) {
+          const text = li.textContent.trim().replace(/\s+/g, ' ');
+          if (text.length > 10 && text.length < 400) results.push(text);
+        }
+        node = node.nextElementSibling;
+      }
+    }
+    return Array.from(new Set(results)).slice(0, 60);
+  } catch (e) {
+    return [];
+  }
+}
+
 // ============================================================
-// PROMPT + JSON EXTRACTION
+// PROMPTS + JSON EXTRACTION
 // ============================================================
-function buildPrompt(topic, path, grounding) {
-  const breadcrumb = path.join(' > ');
-  const groundingBlock = grounding
-    ? `Real-world grounding (from Wikipedia, "${grounding.title}"):\n"""\n${grounding.extract}\n"""\nUse this only as a factual grounding check — write in your own words, and don't just copy sentences from it.`
+function groundingBlockFor(grounding) {
+  return grounding
+    ? `Real-world grounding (from Wikipedia, "${grounding.title}"):\n"""\n${grounding.extract}\n"""\nUse this only as a factual grounding check — write in your own words, don't copy sentences from it.`
     : `No reliable grounding source was found for this exact topic — rely on your own knowledge, and be conservative (fewer, more confident items) rather than inventing specifics you're unsure of.`;
+}
+
+function buildChildrenPrompt(topic, path, grounding, siblingNames) {
+  const breadcrumb = path.join(' > ');
+  const siblingBlock = (siblingNames && siblingNames.length)
+    ? `\nThese topics are already placed as siblings of "${topic}" (i.e. as other direct children of ${path.length > 1 ? '"' + path[path.length - 2] + '"' : 'the level above'}):\n${siblingNames.map(n => '- ' + n).join('\n')}\nDo NOT list any of these as a child of "${topic}" — each of them is already established as its own peer-level topic elsewhere in the tree, not a sub-topic specific to "${topic}". If something feels related to both, it belongs at whichever level it was already placed, not duplicated here.\n`
+    : '';
+  const sourceBlock = (grounding && grounding.fullText)
+    ? `Real source material (from Wikipedia, "${grounding.title}"):\n"""\n${grounding.fullText}\n"""\nYou are a FILTER over this real source, not a free generator: identify the genuine sub-fields this source actually discusses or names, and use those as the backbone of your answer. Only add a well-known real sub-field beyond what's in the text above if you are highly confident it's real and standard — don't rely on your own recall as the primary source when real text is available above.`
+    : `No reliable source text was found for this exact topic — rely on your own knowledge, and be conservative (fewer, more confident items) rather than inventing specifics you're unsure of.`;
 
   return `You are an expert academic advisor building a browsable knowledge map. The user is looking at: "${topic}"
 Full path so far: ${breadcrumb}
 
-${groundingBlock}
-
+${sourceBlock}
+${siblingBlock}
 Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
 
 {
   "description": "1-2 sentence plain-language overview of ${JSON.stringify(topic)} itself",
   "children": [
     {"name": "Clean short sub-discipline name", "one_liner": "one sentence on what it covers"}
-    // 6 to 14 items, real distinct sub-fields of "${topic}", NOT duplicates of each other or of "${topic}" itself
-  ],
-  "reading_list": {
-    "foundational": [{"title": "...", "author": "...", "year": "...", "why": "1 sentence"}],
-    "introductory": [ /* same shape, 2-4 items */ ],
-    "intermediate": [ /* 2-4 items */ ],
-    "advanced": [ /* 2-4 items */ ],
-    "research_frontier": [ /* 2-4 items */ ]
-  },
-  "paradigms": [
-    {"name": "Name of a major theoretical framework/school within ${JSON.stringify(topic)}", "description": "1-2 sentences", "key_works": ["Author (Year) — short title", "..."]}
-    // 2 to 5 items. Only include this if the field genuinely has distinct competing paradigms/schools of thought;
-    // if it doesn't (e.g. a narrow technical topic), return an empty array rather than inventing false divisions.
   ]
 }
 
-Rules: real titles/authors/years only, omit an item rather than guessing. Node names in "children" must be clean short names (a few words), never full sentences or descriptions.`;
+Rules for "children" — read carefully, this is the part that most often goes wrong:
+- Ground this in the real source text above — list the genuine sub-fields it actually discusses, not
+  a list free-recalled from memory. Do not cap yourself at a small round number, but do not pad with
+  duplicates, near-duplicates, or made-up subdivisions either.
+- Reflect how the field is actually organized (as taught in textbooks/university curricula), not an
+  ad-hoc list. If there's a well-known major branch, include the branch itself, not just one of its
+  narrower sub-topics standing in for it (e.g. for "Mathematics", include "Analysis" as its own branch
+  rather than only listing "Complex analysis" and letting the broader field go unrepresented).
+- CRITICAL: every item must sit at exactly the SAME depth — one step down from "${topic}", no deeper.
+  Do not mix broad sub-fields with their own narrower subdivisions in this same list. For example, if
+  "${topic}" were "Logic", the correct children are broad branches like "Propositional logic",
+  "Modal logic", "Philosophy of logic" — NOT a mix that also throws in narrower topics like
+  "Cut elimination" or "Turing degrees" (those belong one level deeper, under whichever branch they
+  actually subdivide, and should only appear later when the user drills into THAT branch).
+- If you're ever unsure whether two candidates are true siblings or one is really a child of the
+  other, treat the more specific one as belonging one level deeper and leave it out of this list.
+- Node names must be clean short names (a few words), never full sentences or descriptions.`;
+}
+
+function buildKeyQuestionsPrompt(topic, path, grounding) {
+  const breadcrumb = path.join(' > ');
+  return `You are explaining the field "${topic}" (full path: ${breadcrumb}) to someone who has never
+studied it, by identifying the real questions it is trying to answer.
+
+${groundingBlockFor(grounding)}
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "key_questions": {
+    "beginner": [
+      {"question": "A plain question a complete newcomer could ask, e.g. 'why does this area exist / what problem is it solving'", "explanation": "3-5 sentences in plain language for a COMPLETE beginner — assume zero background, define any jargon you use, explain why this question matters and what a satisfying answer would even look like"}
+    ],
+    "intermediate": [
+      {"question": "A question that requires some foundational knowledge of ${JSON.stringify(topic)} to even state precisely", "explanation": "3-5 sentences, plain language, but can now assume the reader has picked up the basics from the beginner questions above"}
+    ],
+    "advanced": [
+      {"question": "A genuine open or actively-researched question at the frontier of ${JSON.stringify(topic)}", "explanation": "3-5 sentences explaining, in plain language, why this is hard/unresolved and what's actually at stake"}
+    ]
+  }
+}
+
+2-4 questions per level (beginner/intermediate/advanced), so 6-12 total. These must be the REAL
+questions people in this field actually orient around — not generic restatements like "what is
+${JSON.stringify(topic)}". Every explanation must be genuinely readable by a complete beginner: no
+unexplained jargon, no assuming prior context beyond what earlier (lower) levels already covered.`;
+}
+
+function buildQuestionReadingListPrompt(topic, path, question, grounding, otherQuestions) {
+  const breadcrumb = path.join(' > ');
+  const hasCitations = grounding && Array.isArray(grounding.citations) && grounding.citations.length > 0;
+  const citationsBlock = hasCitations
+    ? `Real citations found on this topic's Wikipedia page ("Further reading"/"Bibliography"/"References"):\n${grounding.citations.map(c => '- ' + c).join('\n')}\n\nThese are REAL, verified works. Do not just dump the whole list here — select and use ONLY the ones that actually bear on THIS specific question; ignore the rest (they belong to other questions' lists, not this one). Add other well-known, high-confidence real works only to fill a genuine gap.`
+    : `No real citation list was found for this topic on Wikipedia — rely on your own knowledge, and be conservative (fewer, more confident items) rather than inventing specifics you're unsure of.`;
+  const otherQuestionsBlock = (otherQuestions && otherQuestions.length)
+    ? `\nThis topic has OTHER questions with their own separate reading lists already (or about to be generated):\n${otherQuestions.map(q => '- ' + q).join('\n')}\nYour list must be distinctly shaped by THIS question, not a copy of what you'd hand someone for those. If a work would appear on literally every one of these lists (a generic intro textbook for the whole field), that's a signal you're being too generic — prefer works that speak to this question's specific angle. It's fine for genuinely foundational prerequisites to overlap somewhat across questions, but the intermediate/advanced/current_research sections especially should look different from question to question.\n`
+    : '';
+
+  return `Build a reading list that takes someone from ZERO prerequisites all the way to current
+research, specifically for answering this one question:
+
+"${question}"
+
+(This question belongs to "${topic}", full path: ${breadcrumb}.)
+
+${citationsBlock}
+${otherQuestionsBlock}
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "reading_list": {
+    "prerequisites": [{"title": "...", "author": "...", "year": "...", "locator": "a DOI or arXiv ID ONLY if you are genuinely confident of the exact value — empty string otherwise, never guess one", "why": "1 sentence — what this gives you before you can even approach the question", "answers": "2-3 sentences, in detail: the specific question or problem THIS work itself sets out to answer, in plain language — its own central question, not just its relevance to the question above"}],
+    "foundational": [ /* same shape — the field's own basics needed for THIS specific question, not a generic field overview */ ],
+    "intermediate": [ /* same shape */ ],
+    "advanced": [ /* same shape */ ],
+    "current_research": [ /* same shape — recent/seminal work that directly addresses this question today */ ]
+  }
+}
+
+Every item must earn its place by actually being relevant to THIS question specifically — ask yourself
+"would this work also be the obvious pick for a different question about ${JSON.stringify(topic)}?" and
+if the honest answer is yes for most of your list, you have defaulted to a generic topic overview
+instead of answering the actual question asked. Be genuinely exhaustive within what's truly specific —
+every real, relevant work available to you (prioritizing the citations above when given), not a token
+handful, but specificity matters more than length. Real titles/authors/years only; omit an item entirely
+rather than guessing or inventing one to pad a section. Take the "answers" field seriously and in
+detail — it should let someone decide whether to read the work without opening it. Never fabricate a
+DOI or arXiv ID for "locator" — a made-up one is worse than an empty string, since it looks real but
+leads nowhere.`;
+}
+
+function buildResearchQuestionsPrompt(topic, path, grounding) {
+  const breadcrumb = path.join(' > ');
+  return `You are an active researcher in "${topic}" (full path: ${breadcrumb}), listing the field's
+genuine OPEN problems — not educational questions, actual unsolved research questions.
+
+${groundingBlockFor(grounding)}
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "research_questions": [
+    {"question": "A specific open research question, phrased precisely the way researchers in this field would state it", "status": "2-3 sentences: what's currently known, why it remains open, what progress or resolution would actually look like"}
+  ]
+}
+
+4-8 questions. Every one must be a REAL, currently-open problem this field's researchers are actually
+working on right now — not a "what is X" restatement, not a settled question with a known textbook
+answer, not a vague "advanced topic." If you're not genuinely confident a question is still open, leave
+it out rather than including it to pad the list.`;
+}
+
+function buildResearchLiteraturePrompt(topic, path, question, grounding) {
+  const breadcrumb = path.join(' > ');
+  const hasCitations = grounding && Array.isArray(grounding.citations) && grounding.citations.length > 0;
+  const citationsBlock = hasCitations
+    ? `Real citations found on this topic's Wikipedia page (for cross-reference, may or may not be relevant to this specific question):\n${grounding.citations.map(c => '- ' + c).join('\n')}\n`
+    : '';
+
+  return `Build a PRECISE literature list for this one specific open research question in "${topic}"
+(full path: ${breadcrumb}):
+
+"${question}"
+
+${citationsBlock}
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "literature": [
+    {
+      "title": "...",
+      "author": "...",
+      "year": "...",
+      "venue": "the specific journal, conference, or preprint server (e.g. arXiv) this appeared in — as precisely as you know it",
+      "locator": "a DOI, arXiv ID, or specific section/chapter if you know one — empty string if you don't",
+      "relevance": "1-2 sentences on EXACTLY how this work addresses THIS question specifically, not the general topic",
+      "answers": "2-3 sentences, in detail: the specific question or claim THIS work itself is trying to answer/establish, in plain language — e.g. what it actually proves, argues, or reports, not a restatement of the open question above"
+    }
+  ]
+}
+
+Precision matters more than volume here. Every item must be a real, specific, verifiable work that
+directly engages with this exact question — not a general textbook about the broader topic. If you
+don't know a precise venue or locator for an item, leave that field as an empty string rather than
+guessing or inventing one. Omit any work you aren't confident is both real and specifically relevant to
+this question. Take the "answers" field seriously and in detail — it should let someone judge the
+work's actual content and contribution without opening it.`;
+}
+
+function buildParadigmsPrompt(topic, path, grounding) {
+  const breadcrumb = path.join(' > ');
+  return `You are an expert academic advisor. The user is looking at: "${topic}"
+Full path: ${breadcrumb}
+
+${groundingBlockFor(grounding)}
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "paradigms": [
+    {"name": "Name of a major theoretical framework/school within ${JSON.stringify(topic)}", "description": "1-2 sentences", "key_works": ["Author (Year) — short title", "..."]}
+  ]
+}
+
+Only include entries if the field genuinely has distinct competing paradigms/schools of thought; if it
+doesn't (e.g. a narrow technical topic), return an empty array rather than inventing false divisions.`;
 }
 
 function extractJson(text) {
@@ -469,15 +1061,34 @@ function renderLoading() {
 
 function renderError(msg) {
   const content = document.getElementById('content');
-  content.innerHTML = `${renderBreadcrumbHtml()}<div class="error">❌ ${escHtml(msg)}</div><div style="margin-top:12px"><button class="btn" onclick="generateNode()">Retry</button></div>`;
+  content.innerHTML = `${renderBreadcrumbHtml()}<div class="error">❌ ${escHtml(msg)}</div><div style="margin-top:12px"><button class="btn" onclick="generateChildren()">Retry</button></div>`;
+}
+
+function renderTabLoading(tab, msg) {
+  const el = document.getElementById('tab-' + tab);
+  if (el) el.innerHTML = `<div class="loading">⏳ ${escHtml(msg)}</div>`;
+}
+
+function renderTabError(tab, msg, retryCall) {
+  const el = document.getElementById('tab-' + tab);
+  if (el) el.innerHTML = `<div class="error">❌ ${escHtml(msg)}</div><div style="margin-top:12px"><button class="btn" onclick="${retryCall}">Retry</button></div>`;
 }
 
 function renderBreadcrumbHtml() {
   if (currentPath.length === 0) return '';
+  // Static-tree nodes (Mathematics/Physics/Computer Science) are navigated
+  // via the always-visible tree in the sidebar, not breadcrumb clicks --
+  // clicking a crumb here would try to LLM-generate an ancestor node that
+  // was never meant to be generated.
+  const interactive = !(currentNode && currentNode.isStaticTree);
   let html = '<div class="breadcrumb">';
   currentPath.forEach((name, i) => {
     if (i > 0) html += '<span class="sep">›</span>';
-    html += `<span class="crumb" onclick="navigateTo(${escAttr(JSON.stringify(currentPath.slice(0, i + 1)))})">${escHtml(name)}</span>`;
+    if (interactive) {
+      html += `<span class="crumb" onclick="navigateTo(${escAttr(JSON.stringify(currentPath.slice(0, i + 1)))})">${escHtml(name)}</span>`;
+    } else {
+      html += `<span>${escHtml(name)}</span>`;
+    }
   });
   html += '</div>';
   return html;
@@ -492,42 +1103,79 @@ let activeTab = 'children';
 function renderNode(fromCache) {
   const content = document.getElementById('content');
   const n = currentNode;
+  const isStatic = !!n.isStaticTree;
 
   let html = renderBreadcrumbHtml();
   html += `<div class="node-header"><h2>${escHtml(n.name)}</h2>`;
   if (fromCache) html += '<span class="cache-badge">✓ cached</span>';
-  html += `<span style="flex:1"></span><button class="btn btn-small" onclick="regenerateCurrentNode()">↻ Regenerate</button></div>`;
+  if (isStatic) {
+    html += `<span class="muted" style="font-size:0.75em">from ${escHtml(fieldSourceName(n.fieldKey))}</span>`;
+  }
+  html += '<span style="flex:1"></span>';
+  if (!isStatic) html += `<button class="btn btn-small" onclick="regenerateCurrentNode()">↻ Regenerate</button>`;
+  html += `</div>`;
   if (n.description) html += `<div class="node-desc">${escHtml(n.description)}</div>`;
 
-  html += `<div class="tabs">
-    <div class="tab ${activeTab === 'children' ? 'active' : ''}" onclick="switchTab('children')">🌳 Sub-disciplines (${n.children.length})</div>
-    <div class="tab ${activeTab === 'reading' ? 'active' : ''}" onclick="switchTab('reading')">📖 Reading list</div>
-    <div class="tab ${activeTab === 'paradigms' ? 'active' : ''}" onclick="switchTab('paradigms')">🧭 Paradigms (${n.paradigms.length})</div>
+  const questionCount = n.keyQuestionsGenerated
+    ? ['beginner', 'intermediate', 'advanced'].reduce((sum, lvl) => sum + ((n.keyQuestions[lvl] || []).length), 0)
+    : null;
+  const researchCount = n.researchQuestionsGenerated ? (n.researchQuestions || []).length : null;
+  const paradigmsCount = n.paradigmsGenerated ? (n.paradigms || []).length : null;
+
+  html += `<div class="tabs">`;
+  if (!isStatic) {
+    html += `<div class="tab ${activeTab === 'children' ? 'active' : ''}" onclick="switchTab('children')">🌳 Sub-disciplines (${n.children.length})</div>`;
+  }
+  html += `<div class="tab ${activeTab === 'reading' ? 'active' : ''}" onclick="switchTab('reading')">❓ Basic Questions${questionCount !== null ? ' (' + questionCount + ')' : ''}</div>
+    <div class="tab ${activeTab === 'research' ? 'active' : ''}" onclick="switchTab('research')">🔬 Research Questions${researchCount !== null ? ' (' + researchCount + ')' : ''}</div>
+    <div class="tab ${activeTab === 'paradigms' ? 'active' : ''}" onclick="switchTab('paradigms')">🧭 Paradigms${paradigmsCount !== null ? ' (' + paradigmsCount + ')' : ''}</div>
   </div>`;
 
-  html += `<div id="tab-children" class="tab-content ${activeTab === 'children' ? 'active' : ''}">`;
-  if (n.children.length === 0) {
-    html += '<p class="node-desc">No sub-disciplines generated.</p>';
-  } else {
-    html += '<div class="child-grid">';
-    for (const c of n.children) {
-      html += `<div class="child-card" onclick="navigateChild(${escAttr(JSON.stringify(c.name))})">
-        <div class="name">${escHtml(c.name)}</div>
-        <div class="one-liner">${escHtml(c.one_liner || '')}</div>
-      </div>`;
+  if (!isStatic) {
+    html += `<div id="tab-children" class="tab-content ${activeTab === 'children' ? 'active' : ''}">`;
+    if (n.children.length === 0) {
+      html += '<p class="node-desc">No sub-disciplines generated.</p>';
+    } else {
+      html += '<div class="child-grid">';
+      for (const c of n.children) {
+        html += `<div class="child-card" onclick="navigateChild(${escAttr(JSON.stringify(c.name))})">
+          <div class="name">${escHtml(c.name)}</div>
+          <div class="one-liner">${escHtml(c.one_liner || '')}</div>
+        </div>`;
+      }
+      html += '</div>';
     }
     html += '</div>';
   }
-  html += '</div>';
 
   html += `<div id="tab-reading" class="tab-content ${activeTab === 'reading' ? 'active' : ''}">`;
-  html += renderReadingListHtml(n.reading_list);
+  if (!n.keyQuestionsGenerated) {
+    html += '<p class="node-desc">Not generated yet — identifies the beginner/intermediate/advanced questions this field is trying to answer, explained in plain language for a complete beginner. Each question then gets its own reading list, from prerequisites to current research, on demand.</p>';
+    html += '<button class="btn btn-primary" onclick="generateKeyQuestionsForCurrentNode()">❓ Generate basic questions</button>';
+  } else {
+    html += '<div style="margin-bottom:12px"><button class="btn btn-small" onclick="generateKeyQuestionsForCurrentNode()">↻ Regenerate questions</button></div>';
+    html += renderKeyQuestionsHtml(n);
+  }
+  html += '</div>';
+
+  html += `<div id="tab-research" class="tab-content ${activeTab === 'research' ? 'active' : ''}">`;
+  if (!n.researchQuestionsGenerated) {
+    html += '<p class="node-desc">Not generated yet — identifies genuine open/unsolved problems this field\'s researchers are currently working on (not educational questions). Each open problem then gets its own precise literature list, on demand.</p>';
+    html += '<button class="btn btn-primary" onclick="generateResearchQuestionsForCurrentNode()">🔬 Generate research questions</button>';
+  } else {
+    html += '<div style="margin-bottom:12px"><button class="btn btn-small" onclick="generateResearchQuestionsForCurrentNode()">↻ Regenerate questions</button></div>';
+    html += renderResearchQuestionsHtml(n);
+  }
   html += '</div>';
 
   html += `<div id="tab-paradigms" class="tab-content ${activeTab === 'paradigms' ? 'active' : ''}">`;
-  if (n.paradigms.length === 0) {
+  if (!n.paradigmsGenerated) {
+    html += '<p class="node-desc">Not generated yet.</p>';
+    html += '<button class="btn btn-primary" onclick="generateParadigmsForCurrentNode()">🧭 Generate paradigms</button>';
+  } else if (n.paradigms.length === 0) {
     html += '<p class="node-desc">No distinct competing paradigms identified for this topic.</p>';
   } else {
+    html += '<div style="margin-bottom:12px"><button class="btn btn-small" onclick="generateParadigmsForCurrentNode()">↻ Regenerate</button></div>';
     for (const p of n.paradigms) {
       html += `<div class="paradigm-card">
         <div class="name">${escHtml(p.name)}</div>
@@ -549,9 +1197,67 @@ function renderNode(fromCache) {
   content.innerHTML = html;
 }
 
-function renderReadingListHtml(list) {
-  const order = ['foundational', 'introductory', 'intermediate', 'advanced', 'research_frontier'];
-  const labels = { foundational: 'Foundational', introductory: 'Introductory', intermediate: 'Intermediate', advanced: 'Advanced', research_frontier: 'Research frontier' };
+const QUESTION_LEVELS = [
+  ['beginner', '🌱 Beginner'],
+  ['intermediate', '🌿 Intermediate'],
+  ['advanced', '🌳 Advanced / research frontier'],
+];
+
+function renderKeyQuestionsHtml(n) {
+  let html = '';
+  for (const [level, label] of QUESTION_LEVELS) {
+    const questions = (n.keyQuestions && n.keyQuestions[level]) || [];
+    if (questions.length === 0) continue;
+    html += `<div class="questions-block"><h4>${label}</h4>`;
+    questions.forEach((q, index) => {
+      const qKey = questionKey(level, index);
+      const qrl = n.questionReadingLists && n.questionReadingLists[qKey];
+      html += `<div class="question-item">
+        <div class="q">${escHtml(q.question || '')}</div>
+        <div class="why">${escHtml(q.explanation || '')}</div>`;
+      if (qrl && qrl.generated) {
+        html += `<div style="margin-top:10px"><button class="btn btn-small" onclick="generateReadingListForQuestion(${escAttr(JSON.stringify(level))}, ${index})">↻ Regenerate reading list</button></div>`;
+        html += `<div id="qreading-${qKey}">${renderQuestionReadingListHtml(qrl.readingList)}</div>`;
+      } else {
+        html += `<div style="margin-top:10px" id="qreading-${qKey}"><button class="btn btn-small btn-primary" onclick="generateReadingListForQuestion(${escAttr(JSON.stringify(level))}, ${index})">📖 Generate reading list for this question</button></div>`;
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+  }
+  return html || '<p class="node-desc">No key questions generated.</p>';
+}
+
+// Never trust an LLM-generated URL directly (DOIs/arXiv IDs get hallucinated
+// easily). A real DOI/arXiv ID the model gave us becomes a direct link;
+// everything else gets a client-constructed search link, which is always
+// valid since it's just a query, not a claim about a specific URL existing.
+function isDoi(s) { return /^10\.\d{4,9}\/\S+$/.test(s.trim()); }
+function isArxivId(s) { return /^\d{4}\.\d{4,5}(v\d+)?$/.test(s.trim()); }
+
+function workLinksHtml(item) {
+  const links = [];
+  const locator = (item.locator || '').trim();
+  if (locator) {
+    if (isDoi(locator)) {
+      links.push(`<a href="https://doi.org/${encodeURIComponent(locator)}" target="_blank" rel="noopener">DOI</a>`);
+    } else if (isArxivId(locator)) {
+      links.push(`<a href="https://arxiv.org/abs/${encodeURIComponent(locator)}" target="_blank" rel="noopener">arXiv</a>`);
+    } else {
+      links.push(escHtml(locator));
+    }
+  }
+  const q = encodeURIComponent([item.title, item.author].filter(Boolean).join(' '));
+  if (q) {
+    links.push(`<a href="https://www.google.com/search?tbm=bks&q=${q}" target="_blank" rel="noopener">Google Books</a>`);
+    links.push(`<a href="https://scholar.google.com/scholar?q=${q}" target="_blank" rel="noopener">Scholar</a>`);
+  }
+  return links.length ? `<div class="locator">${links.join(' · ')}</div>` : '';
+}
+
+function renderQuestionReadingListHtml(list) {
+  const order = ['prerequisites', 'foundational', 'intermediate', 'advanced', 'current_research'];
+  const labels = { prerequisites: 'Prerequisites', foundational: 'Foundational', intermediate: 'Intermediate', advanced: 'Advanced', current_research: 'Current research' };
   let html = '';
   let any = false;
   for (const key of order) {
@@ -563,12 +1269,56 @@ function renderReadingListHtml(list) {
       html += `<div class="reading-item">
         <div class="title">${escHtml(item.title || '')}</div>
         <div class="meta">${escHtml(item.author || '')}${item.year ? ' · ' + escHtml(item.year) : ''}</div>
-        <div class="why">${escHtml(item.why || '')}</div>
-      </div>`;
+        ${workLinksHtml(item)}
+        <div class="why">${escHtml(item.why || '')}</div>`;
+      if (item.answers) {
+        html += `<div class="answers"><span class="answers-label">What it answers:</span> ${escHtml(item.answers)}</div>`;
+      }
+      html += `</div>`;
     }
     html += '</div>';
   }
-  if (!any) html = '<p class="node-desc">No reading list generated.</p>';
+  if (!any) html = '<p class="node-desc" style="margin-top:8px">No reading list generated.</p>';
+  return html;
+}
+
+function renderResearchQuestionsHtml(n) {
+  const questions = n.researchQuestions || [];
+  if (questions.length === 0) return '<p class="node-desc">No open research questions generated.</p>';
+  let html = '';
+  questions.forEach((q, index) => {
+    const lit = n.researchQuestionLiterature && n.researchQuestionLiterature[index];
+    html += `<div class="question-item">
+      <div class="q">${escHtml(q.question || '')}</div>
+      <div class="why">${escHtml(q.status || '')}</div>`;
+    if (lit && lit.generated) {
+      html += `<div style="margin-top:10px"><button class="btn btn-small" onclick="generateLiteratureForResearchQuestion(${index})">↻ Regenerate literature</button></div>`;
+      html += `<div id="rqlit-${index}">${renderResearchLiteratureHtml(lit.works)}</div>`;
+    } else {
+      html += `<div style="margin-top:10px" id="rqlit-${index}"><button class="btn btn-small btn-primary" onclick="generateLiteratureForResearchQuestion(${index})">🔬 Find literature for this open problem</button></div>`;
+    }
+    html += '</div>';
+  });
+  return html;
+}
+
+function renderResearchLiteratureHtml(works) {
+  if (!Array.isArray(works) || works.length === 0) {
+    return '<p class="node-desc" style="margin-top:8px">No literature generated.</p>';
+  }
+  let html = '<div class="level-section" style="margin-top:8px">';
+  for (const w of works) {
+    html += `<div class="reading-item">
+      <div class="title">${escHtml(w.title || '')}</div>
+      <div class="meta">${escHtml(w.author || '')}${w.year ? ' · ' + escHtml(w.year) : ''}${w.venue ? ' · ' + escHtml(w.venue) : ''}</div>
+      ${workLinksHtml(w)}
+      <div class="why">${escHtml(w.relevance || '')}</div>`;
+    if (w.answers) {
+      html += `<div class="answers"><span class="answers-label">What it answers:</span> ${escHtml(w.answers)}</div>`;
+    }
+    html += '</div>';
+  }
+  html += '</div>';
   return html;
 }
 
@@ -591,7 +1341,7 @@ document.getElementById('apiKey').addEventListener('change', e => localStorage.s
 
 const modelSelect = document.getElementById('model');
 const modelCustom = document.getElementById('modelCustom');
-const savedModel = localStorage.getItem('openrouter_model') || 'openai/gpt-4o-mini';
+const savedModel = localStorage.getItem('openrouter_model') || 'google/gemini-2.5-flash';
 const knownOptions = Array.from(modelSelect.options).map(o => o.value);
 if (knownOptions.includes(savedModel)) {
   modelSelect.value = savedModel;
@@ -608,6 +1358,7 @@ modelCustom.addEventListener('change', () => localStorage.setItem('openrouter_mo
 
 renderRootChips();
 renderRecentList();
+renderFieldTabs();
 </script>
 
 </body>
