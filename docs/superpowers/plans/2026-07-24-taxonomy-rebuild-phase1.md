@@ -249,14 +249,14 @@ class TestNormalizeName(unittest.TestCase):
 class TestParseWikiHtmlToTree(unittest.TestCase):
     SAMPLE_HTML = '''
     <div class="mw-parser-output">
-      <div class="mw-heading mw-heading2"><h2 id="Branches">Branches<span class="mw-editsection">edit</span></h2></div>
+      <div class="mw-heading mw-heading2"><h2 id="Branches">Branches</h2><span class="mw-editsection">[<a href="#">edit</a>]</span></div>
       <ul>
         <li><a href="/wiki/Foo">Foo</a>
           <ul><li><a href="/wiki/Bar">Bar</a></li></ul>
         </li>
         <li><a href="/wiki/Baz">Baz</a></li>
       </ul>
-      <div class="mw-heading mw-heading2"><h2 id="See_also">See also<span class="mw-editsection">edit</span></h2></div>
+      <div class="mw-heading mw-heading2"><h2 id="See_also">See also</h2><span class="mw-editsection">[<a href="#">edit</a>]</span></div>
       <ul><li><a href="/wiki/Ignored">Ignored</a></li></ul>
     </div>
     '''
