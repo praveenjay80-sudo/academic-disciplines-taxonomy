@@ -54,6 +54,8 @@ class TestParseWikiHtmlToTree(unittest.TestCase):
 from build_taxonomy import (
     merge_nodes, find_node_by_name, dedup_forest, topic_candidates,
     merge_page_into_skeleton, PAGE_DOMAIN_FALLBACK, WIKI_OUTLINE_PAGES,
+    cleanup_node, sort_tree, to_compact_tree, flatten_for_search,
+    _resolved_page_title,
 )
 
 
@@ -162,6 +164,50 @@ class TestMergePageIntoSkeleton(unittest.TestCase):
             if title == 'Outline_of_academic_disciplines':
                 continue
             self.assertIn(title, PAGE_DOMAIN_FALLBACK, f'{title} missing from PAGE_DOMAIN_FALLBACK')
+
+
+class TestCleanupAndSort(unittest.TestCase):
+    def test_cleanup_strips_level_key(self):
+        node = {'name': 'X', 'sources': [], 'children': [], 'level': 2}
+        cleanup_node(node)
+        self.assertNotIn('level', node)
+
+    def test_sort_orders_children_case_insensitively(self):
+        node = make_node('Root', [make_node('banana'), make_node('Apple')])
+        sort_tree(node)
+        self.assertEqual([c['name'] for c in node['children']], ['Apple', 'banana'])
+
+
+class TestCompactOutputs(unittest.TestCase):
+    def test_to_compact_tree_picks_wikipedia_url(self):
+        node = make_node('Physics', [make_node('Optics')], url='https://en.wikipedia.org/wiki/Physics')
+        compact = to_compact_tree(node)
+        self.assertEqual(compact, {
+            'n': 'Physics',
+            'u': 'https://en.wikipedia.org/wiki/Physics',
+            'c': [{'n': 'Optics', 'u': 'https://en.wikipedia.org/wiki/Optics', 'c': []}],
+        })
+
+    def test_flatten_for_search_builds_paths_and_depths(self):
+        node = make_node('Humanities', [make_node('History')])
+        out = []
+        flatten_for_search(node, [], 0, out)
+        self.assertEqual(out, [
+            {'n': 'Humanities', 'p': 'Humanities', 'u': 'https://en.wikipedia.org/wiki/Humanities', 'd': 0},
+            {'n': 'History', 'p': 'Humanities > History', 'u': 'https://en.wikipedia.org/wiki/History', 'd': 1},
+        ])
+
+
+class TestResolvedPageTitle(unittest.TestCase):
+    def test_extracts_title_from_edit_section_link(self):
+        html = ('<div class="mw-heading mw-heading2"><h2 id="X">X</h2>'
+                '<span class="mw-editsection"><a href="/w/index.php?'
+                'title=Outline_of_academic_disciplines&amp;action=edit&amp;section=1">edit</a>'
+                '</span></div>')
+        self.assertEqual(_resolved_page_title(html), 'Outline_of_academic_disciplines')
+
+    def test_returns_none_when_no_edit_link_present(self):
+        self.assertIsNone(_resolved_page_title('<div>no edit links here</div>'))
 
 
 if __name__ == '__main__':

@@ -437,8 +437,115 @@ def merge_page_into_skeleton(skeleton, page_title, page_tree):
     return f'{domain_name} > {topic_label} (fallback)'
 
 
+def cleanup_node(node):
+    """Strip transient parsing keys (in place, recursive)."""
+    node.pop('level', None)
+    for c in node.get('children', []):
+        cleanup_node(c)
+
+
+def sort_tree(node):
+    """Sort children alphabetically, case-insensitive (in place, recursive)."""
+    for c in node.get('children', []):
+        sort_tree(c)
+    node['children'].sort(key=lambda x: x['name'].lower())
+
+
+def count_nodes(node):
+    return 1 + sum(count_nodes(c) for c in node.get('children', []))
+
+
+def _primary_url(node):
+    for src, url in node.get('sources', []):
+        if src == 'wikipedia':
+            return url
+    sources = node.get('sources', [])
+    return sources[0][1] if sources else ''
+
+
+def to_compact_tree(node):
+    return {
+        'n': node['name'],
+        'u': _primary_url(node),
+        'c': [to_compact_tree(c) for c in node.get('children', [])],
+    }
+
+
+def flatten_for_search(node, path, depth, out):
+    full_path = path + [node['name']]
+    out.append({'n': node['name'], 'p': ' > '.join(full_path), 'u': _primary_url(node), 'd': depth})
+    for c in node.get('children', []):
+        flatten_for_search(c, full_path, depth + 1, out)
+
+
+def _resolved_page_title(html_text):
+    """Best-effort extraction of the page title Wikipedia actually rendered,
+    via a section-edit link's title= query param. Returns None if not found."""
+    match = re.search(r'title=([A-Za-z0-9_]+)&amp;action=edit', html_text)
+    return match.group(1) if match else None
+
+
+def build_taxonomy():
+    """Run the full pipeline: parse all pages, merge into the skeleton, dedup.
+    Returns the final list of top-level domain nodes."""
+    skeleton_html = load_page_html('Outline_of_academic_disciplines')
+    if skeleton_html is None:
+        raise RuntimeError('Could not load the Outline_of_academic_disciplines skeleton page')
+    skeleton = parse_wiki_html_to_tree(skeleton_html, 'Outline_of_academic_disciplines')
+
+    for title in WIKI_OUTLINE_PAGES:
+        if title == 'Outline_of_academic_disciplines':
+            continue
+        html_text = load_page_html(title)
+        if html_text is None:
+            print(f'  SKIP (fetch failed): {title}')
+            continue
+
+        resolved = _resolved_page_title(html_text)
+        if resolved and resolved != title and resolved in WIKI_OUTLINE_PAGES:
+            # This page's real content is a duplicate of another page we
+            # already fetch and merge independently.
+            print(f'  SKIP (duplicate content, resolves to {resolved}): {title}')
+            continue
+
+        page_tree = parse_wiki_html_to_tree(html_text, title)
+        anchor_name = merge_page_into_skeleton(skeleton, title, page_tree)
+        print(f'  merged {title} -> {anchor_name}')
+
+    skeleton = dedup_forest(skeleton)
+    for node in skeleton:
+        cleanup_node(node)
+        sort_tree(node)
+    return skeleton
+
+
+def main():
+    print('Building taxonomy from Wikipedia Outline pages...')
+    tree = build_taxonomy()
+    total = sum(count_nodes(n) for n in tree)
+    print(f'\nFinal tree: {total} nodes')
+    for n in tree:
+        print(f'  {n["name"]}: {count_nodes(n)}')
+
+    with open(os.path.join(REPO_DIR, 'taxonomy.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(tree, f, ensure_ascii=False, indent=2)
+
+    compact_tree = [to_compact_tree(n) for n in tree]
+    with open(os.path.join(REPO_DIR, 'tree-data.js'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('const RAW_TREE = ' + json.dumps(compact_tree, ensure_ascii=False, separators=(',', ':')) + ';\n')
+
+    flat = []
+    for n in tree:
+        flatten_for_search(n, [], 0, flat)
+    with open(os.path.join(REPO_DIR, 'flat-data.js'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('const RAW_FLAT = ' + json.dumps(flat, ensure_ascii=False, separators=(',', ':')) + ';\n')
+
+    flat_full = [{'name': x['n'], 'path': x['p'], 'url': x['u'], 'depth': x['d']} for x in flat]
+    with open(os.path.join(REPO_DIR, 'taxonomy_flat.json'), 'w', encoding='utf-8', newline='\n') as f:
+        json.dump(flat_full, f, ensure_ascii=False, indent=2)
+
+    print(f'\nWrote taxonomy.json, tree-data.js, flat-data.js, taxonomy_flat.json ({total} nodes, {len(flat)} flat entries)')
+
+
 if __name__ == '__main__':
-    missing = [t for t in WIKI_OUTLINE_PAGES if load_page_html(t) is None]
-    print(f'{len(WIKI_OUTLINE_PAGES) - len(missing)}/{len(WIKI_OUTLINE_PAGES)} pages available')
-    if missing:
-        print('Missing:', missing)
+    main()
