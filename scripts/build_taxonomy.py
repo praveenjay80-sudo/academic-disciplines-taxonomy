@@ -240,6 +240,203 @@ def parse_wiki_html_to_tree(html_text, source_page):
     return tree
 
 
+def merge_nodes(node_a, node_b):
+    """Merge node_b into node_a in place (sources + children, recursive by name).
+    Returns node_a."""
+    existing_urls = {s[1] for s in node_a.get('sources', [])}
+    for source, url in node_b.get('sources', []):
+        if url not in existing_urls:
+            node_a.setdefault('sources', []).append((source, url))
+            existing_urls.add(url)
+
+    children_by_name = {normalize_name(c['name']): c for c in node_a.get('children', [])}
+    for child_b in node_b.get('children', []):
+        norm = normalize_name(child_b['name'])
+        if norm in children_by_name:
+            merge_nodes(children_by_name[norm], child_b)
+        else:
+            node_a.setdefault('children', []).append(child_b)
+            children_by_name[norm] = child_b
+    return node_a
+
+
+def find_node_by_name(nodes, target_norm):
+    """DFS a list of nodes for one whose normalized name matches target_norm."""
+    for node in nodes:
+        if normalize_name(node['name']) == target_norm:
+            return node
+        found = find_node_by_name(node.get('children', []), target_norm)
+        if found:
+            return found
+    return None
+
+
+def dedup_siblings(node):
+    """Recursively merge node's direct children that share a normalized name."""
+    children = node.get('children', [])
+    merged, by_name = [], {}
+    for child in children:
+        norm = normalize_name(child['name'])
+        if norm in by_name:
+            merge_nodes(by_name[norm], child)
+        else:
+            by_name[norm] = child
+            merged.append(child)
+    node['children'] = merged
+    for child in merged:
+        dedup_siblings(child)
+
+
+def dedup_forest(nodes):
+    """Deduplicate a bare list of top-level nodes (no shared parent) and recurse."""
+    merged, by_name = [], {}
+    for node in nodes:
+        norm = normalize_name(node['name'])
+        if norm in by_name:
+            merge_nodes(by_name[norm], node)
+        else:
+            by_name[norm] = node
+            merged.append(node)
+    for node in merged:
+        dedup_siblings(node)
+    return merged
+
+
+def topic_candidates(page_title):
+    """Candidate discipline names to search for, derived from an outline page title."""
+    base = page_title
+    if base.startswith('Outline_of_'):
+        base = base[len('Outline_of_'):]
+    base = base.replace('_', ' ').lower()
+    candidates = [base]
+    if base.startswith('the '):
+        candidates.append(base[4:])
+    return candidates
+
+
+# Fallback parent domain for every non-skeleton page, used only when
+# topic_candidates() finds no matching node anywhere in the skeleton.
+PAGE_DOMAIN_FALLBACK = {
+    'Outline_of_accounting': 'Applied science',
+    'Outline_of_agriculture': 'Applied science',
+    'Outline_of_anthropology': 'Social science',
+    'Outline_of_applied_science': 'Applied science',
+    'Outline_of_archaeology': 'Social science',
+    'Outline_of_architecture': 'Applied science',
+    'Outline_of_artificial_intelligence': 'Formal science',
+    'Outline_of_astronomy': 'Natural science',
+    'Outline_of_biology': 'Natural science',
+    'Outline_of_business': 'Applied science',
+    'Outline_of_chemistry': 'Natural science',
+    'Outline_of_cognitive_science': 'Social science',
+    'Outline_of_communication': 'Social science',
+    'Outline_of_computer_science': 'Formal science',
+    'Outline_of_cooking': 'Applied science',
+    'Outline_of_cryptography': 'Formal science',
+    'Outline_of_cuisines': 'Applied science',
+    'Outline_of_culture': 'Humanities',
+    'Outline_of_dance': 'Humanities',
+    'Outline_of_database_concepts': 'Formal science',
+    'Outline_of_earth_science': 'Natural science',
+    'Outline_of_economics': 'Social science',
+    'Outline_of_education': 'Applied science',
+    'Outline_of_energy': 'Applied science',
+    'Outline_of_energy_development': 'Applied science',
+    'Outline_of_energy_storage': 'Applied science',
+    'Outline_of_engineering': 'Applied science',
+    'Outline_of_film': 'Humanities',
+    'Outline_of_finance': 'Applied science',
+    'Outline_of_food_preparation': 'Applied science',
+    'Outline_of_formal_science': 'Formal science',
+    'Outline_of_geography': 'Social science',
+    'Outline_of_health': 'Applied science',
+    'Outline_of_history': 'Humanities',
+    'Outline_of_journalism': 'Applied science',
+    'Outline_of_law': 'Humanities',
+    'Outline_of_linguistics': 'Social science',
+    'Outline_of_literature': 'Humanities',
+    'Outline_of_logic': 'Formal science',
+    'Outline_of_machine_learning': 'Formal science',
+    'Outline_of_management': 'Applied science',
+    'Outline_of_marketing': 'Applied science',
+    'Outline_of_mathematics': 'Formal science',
+    'Outline_of_medicine': 'Applied science',
+    'Outline_of_military_science_and_technology': 'Applied science',
+    'Outline_of_music': 'Humanities',
+    'Outline_of_natural_science': 'Natural science',
+    'Outline_of_neuroscience': 'Natural science',
+    'Outline_of_nutrition': 'Applied science',
+    'Outline_of_performing_arts': 'Humanities',
+    'Outline_of_philosophy': 'Humanities',
+    'Outline_of_physical_exercise': 'Applied science',
+    'Outline_of_physics': 'Natural science',
+    'Outline_of_political_science': 'Social science',
+    'Outline_of_programming_languages': 'Formal science',
+    'Outline_of_psychology': 'Social science',
+    'Outline_of_religion': 'Humanities',
+    'Outline_of_robotics': 'Applied science',
+    'Outline_of_social_science': 'Social science',
+    'Outline_of_sociology': 'Social science',
+    'Outline_of_software_engineering': 'Formal science',
+    'Outline_of_sports': 'Applied science',
+    'Outline_of_statistics': 'Formal science',
+    'Outline_of_television_broadcasting': 'Applied science',
+    'Outline_of_the_Internet': 'Formal science',
+    'Outline_of_the_arts': 'Humanities',
+    'Outline_of_the_humanities': 'Humanities',
+    'Outline_of_the_visual_arts': 'Humanities',
+    'Outline_of_theatre': 'Humanities',
+    'Outline_of_transport': 'Applied science',
+    'Outline_of_video_games': 'Applied science',
+}
+
+
+def _merge_children_list_by_name(target_node, new_children):
+    existing_by_name = {normalize_name(c['name']): c for c in target_node.get('children', [])}
+    for child in new_children:
+        norm = normalize_name(child['name'])
+        if norm in existing_by_name:
+            merge_nodes(existing_by_name[norm], child)
+        else:
+            target_node.setdefault('children', []).append(child)
+            existing_by_name[norm] = child
+
+
+def merge_page_into_skeleton(skeleton, page_title, page_tree):
+    """Merge a parsed outline page's tree into the skeleton at the correct anchor.
+    Returns the name of the node it merged into (with ' (fallback)' suffix if the
+    domain fallback was used), for logging."""
+    for candidate in topic_candidates(page_title):
+        anchor = find_node_by_name(skeleton, normalize_name(candidate))
+        if anchor:
+            _merge_children_list_by_name(anchor, page_tree)
+            return anchor['name']
+
+    domain_name = PAGE_DOMAIN_FALLBACK.get(page_title)
+    if not domain_name:
+        raise ValueError(f'No domain fallback mapping for {page_title}')
+    domain_node = find_node_by_name(skeleton, normalize_name(domain_name))
+    if domain_node is None:
+        raise ValueError(f'Domain node {domain_name!r} not found in skeleton for {page_title}')
+
+    # Don't dump the page's raw top-level sections directly onto the domain —
+    # that mixes unrelated pages' sections as siblings and, worse, lets a
+    # page's own section titles collide with real domain names. Wrap them
+    # under a topic node named after the page instead, same shape as a
+    # properly-anchored merge would produce.
+    topic_label = topic_candidates(page_title)[-1].title()
+    topic_anchor = find_node_by_name(domain_node.get('children', []), normalize_name(topic_label))
+    if topic_anchor is None:
+        topic_anchor = {
+            'name': topic_label,
+            'sources': [('wikipedia', f'https://en.wikipedia.org/wiki/{page_title}')],
+            'children': [],
+        }
+        domain_node.setdefault('children', []).append(topic_anchor)
+    _merge_children_list_by_name(topic_anchor, page_tree)
+    return f'{domain_name} > {topic_label} (fallback)'
+
+
 if __name__ == '__main__':
     missing = [t for t in WIKI_OUTLINE_PAGES if load_page_html(t) is None]
     print(f'{len(WIKI_OUTLINE_PAGES) - len(missing)}/{len(WIKI_OUTLINE_PAGES)} pages available')
