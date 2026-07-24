@@ -1377,3 +1377,272 @@ git commit -m "Rebuild taxonomy from Wikipedia outlines with corrected merge/ded
   rebuild with IndexedDB caching, wiki scanner fix, new LLM-based expand-node
   feature, OpenRouter model list update) gets its own brainstorming session and
   design doc, since it depends on this corrected tree as its foundation.
+
+---
+
+## Addendum: Task 7 (added after the whole-branch review)
+
+Task 6's rebuild ran successfully (validator exit 0, zero duplicate siblings,
+27,704 nodes) and a per-task review approved it. But the final whole-branch review
+compared the new output against the *previously shipped* `taxonomy.json` and found a
+real regression the task-scoped reviews couldn't see: definition-list-style Wikipedia
+markup ("Term &#8211; long description") is being captured whole as the node's
+`name` instead of just the term. Measured on the real shipped data:
+
+| | Old data (6,806 nodes) | New data (27,704 nodes) |
+|---|---|---|
+| Names containing " – " / " — " (en/em dash) | 0 | 5,432 |
+| Names >200 chars (includes 3 leaked Wikipedia CSS blobs, one 2,549 chars) | 1 | 41 |
+| Empty-name nodes | 2 | 21 |
+
+Root cause confirmed by inspecting the raw cached HTML (`scripts/.cache_wiki/wiki_Outline_of_dance.html`): the source literally contains `Group dance &#8211; dance danced by a group of people simultaneously...` — `&#8211;` is the HTML entity for U+2013 EN DASH, Wikipedia's definition-list separator. `parse_list_item` (Task 2) has no logic to stop at that separator, so the whole run-on sentence becomes the node name.
+
+This addendum was smoke-tested against the real shipped `taxonomy.json` during
+planning, the same way Tasks 1-6 were: the fix below was extracted, run against the
+actual 27,704-node tree, and confirmed to drop the total to 27,637 (only 63 junk/
+empty nodes removed, all with children safely spliced up rather than lost) with zero
+remaining bad-pattern names. Running the existing `dedup_forest` afterward is
+required (cleaning truncated names can create a small number of new collisions —
+4 were observed on the real data) and confirmed to bring the final count to 27,637
+with zero duplicate siblings.
+
+### Task 7: Clean junk node names and fix the README's now-false cleaning claim
+
+**Files:**
+- Modify: `scripts/build_taxonomy.py` (add `clean_node_name`, `clean_tree_names`;
+  wire into `build_taxonomy()` before the `dedup_forest` call)
+- Test: `scripts/test_build_taxonomy.py` (append tests)
+- Modify: `README.md` (fix the now-inaccurate "Cleaning" bullet)
+- Modify (regenerate): `taxonomy.json`, `tree-data.js`, `flat-data.js`,
+  `taxonomy_flat.json` (re-run the pipeline with the fix in place)
+
+**Interfaces:**
+- Consumes: `dedup_forest` (Task 3), `build_taxonomy()` (Task 4).
+- Produces: `clean_node_name(name: str) -> str | None` (returns the cleaned name, or
+  `None` if the node should be dropped as junk), `clean_tree_names(nodes: list[dict])
+  -> list[dict]` (recursively cleans a list of sibling nodes; when a node is dropped,
+  its already-cleaned children are spliced into its position instead of being lost).
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `scripts/test_build_taxonomy.py`:
+
+```python
+from build_taxonomy import clean_node_name, clean_tree_names
+
+
+class TestCleanNodeName(unittest.TestCase):
+    def test_splits_en_dash_definition_style_name(self):
+        self.assertEqual(
+            clean_node_name('Group dance – dance danced by a group of people'),
+            'Group dance',
+        )
+
+    def test_splits_em_dash_definition_style_name(self):
+        self.assertEqual(
+            clean_node_name('Foo — a long description of foo'),
+            'Foo',
+        )
+
+    def test_splits_long_hyphen_separated_name(self):
+        long_desc = 'x' * 70
+        self.assertEqual(clean_node_name(f'Bar - {long_desc}'), 'Bar')
+
+    def test_leaves_short_hyphenated_name_alone(self):
+        self.assertEqual(clean_node_name('Sino-Japanese relations'), 'Sino-Japanese relations')
+
+    def test_drops_empty_name(self):
+        self.assertIsNone(clean_node_name('   '))
+
+    def test_drops_unsplittable_junk_over_length_limit(self):
+        junk = '.mw-parser-output .vanchor{background:#fff}' * 10
+        self.assertIsNone(clean_node_name(junk))
+
+    def test_collapses_internal_whitespace(self):
+        self.assertEqual(clean_node_name('Foo   Bar'), 'Foo Bar')
+
+
+class TestCleanTreeNames(unittest.TestCase):
+    def test_splices_children_of_dropped_junk_node(self):
+        tree = [make_node('Root', [
+            {'name': '', 'sources': [], 'children': [make_node('Orphan child')]},
+            make_node('Kept – some long description here'),
+        ])]
+        cleaned = clean_tree_names(tree)
+        names = [c['name'] for c in cleaned[0]['children']]
+        self.assertIn('Orphan child', names)
+        self.assertIn('Kept', names)
+        self.assertNotIn('', names)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+```bash
+cd scripts && python -m unittest test_build_taxonomy -v
+```
+
+Expected: `ImportError: cannot import name 'clean_node_name'`.
+
+- [ ] **Step 3: Add `clean_node_name` and `clean_tree_names` to `scripts/build_taxonomy.py`**
+
+Add after `dedup_forest` (before `topic_candidates`):
+
+```python
+# Node names above this length with no clean separator to split at are
+# treated as junk (leaked Wikipedia CSS, full bibliographic citations, etc)
+# rather than real discipline names, and dropped.
+JUNK_NAME_MAX_LEN = 200
+
+
+def clean_node_name(name):
+    """Split Wikipedia definition-list-style 'Term – long description' names
+    down to just the term. Returns the cleaned name, or None if the node is
+    junk (empty, or too long with no clean split point) and should be dropped."""
+    name = ' '.join(name.split())
+    for sep in (' – ', ' — '):
+        if sep in name:
+            name = name.split(sep, 1)[0].strip()
+            break
+    else:
+        if len(name) > 60 and ' - ' in name:
+            name = name.split(' - ', 1)[0].strip()
+    if not name:
+        return None
+    if len(name) > JUNK_NAME_MAX_LEN:
+        return None
+    return name
+
+
+def clean_tree_names(nodes):
+    """Recursively clean/split node names. A node that cleans to junk is
+    removed, and its own (already-cleaned) children are spliced into its
+    position so real sub-disciplines under a junk entry aren't lost."""
+    cleaned = []
+    for node in nodes:
+        node['children'] = clean_tree_names(node.get('children', []))
+        new_name = clean_node_name(node['name'])
+        if new_name is None:
+            cleaned.extend(node['children'])
+        else:
+            node['name'] = new_name
+            cleaned.append(node)
+    return cleaned
+```
+
+Then modify `build_taxonomy()` to call it before the dedup pass. Find this block:
+
+```python
+    skeleton = dedup_forest(skeleton)
+    for node in skeleton:
+        cleanup_node(node)
+        sort_tree(node)
+    return skeleton
+```
+
+Replace it with:
+
+```python
+    skeleton = clean_tree_names(skeleton)
+    # Cleaning can turn two previously-distinct names into the same name
+    # (e.g. two different long descriptions that both start with "History"),
+    # so dedup must run after cleaning, not before.
+    skeleton = dedup_forest(skeleton)
+    for node in skeleton:
+        cleanup_node(node)
+        sort_tree(node)
+    return skeleton
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+```bash
+cd scripts && python -m unittest test_build_taxonomy -v
+```
+
+Expected: `OK`, all tests pass (should be 24 + 9 new = 33 total).
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd .. && git add scripts/build_taxonomy.py scripts/test_build_taxonomy.py
+git commit -m "Clean junk node names: split definition-list markup, drop unsplittable junk"
+```
+
+- [ ] **Step 6: Re-run the full pipeline**
+
+```bash
+python scripts/build_taxonomy.py
+```
+
+Expected: same merge log as Task 6's run (same SKIP lines), but the final node count
+will be slightly lower than 27,704 (around 27,637, based on the planning-time run —
+report the actual number, don't assume it matches exactly).
+
+- [ ] **Step 7: Re-run the validator**
+
+```bash
+python scripts/verify_taxonomy.py; echo "exit code: $?"
+```
+
+Expected: exit code `0`, `No duplicate siblings found.` — cleaning must not have
+introduced any new duplicate siblings that the dedup pass didn't catch.
+
+Also spot-check that the bad patterns are actually gone:
+
+```bash
+python3 -c "
+import json
+tree = json.load(open('taxonomy.json', encoding='utf-8'))
+bad = {'dash':0, 'long':0, 'empty':0}
+def check(n):
+    name = n['name']
+    if ' – ' in name or ' — ' in name: bad['dash'] += 1
+    if len(name) > 200: bad['long'] += 1
+    if name.strip() == '': bad['empty'] += 1
+    for c in n.get('children', []): check(c)
+for n in tree: check(n)
+print(bad)
+"
+```
+
+Expected: `{'dash': 0, 'long': 0, 'empty': 0}`.
+
+- [ ] **Step 8: Fix the README's now-accurate stats and cleaning claim**
+
+The README currently (after Task 6) says:
+```
+Interactive browser for 27,704 academic disciplines scraped from 68 Wikipedia Outline pages.
+...
+- **Taxonomy Browser** — Collapsible tree of 27,704 disciplines across 5 domains (Humanities, Social science, Natural science, Formal science, Applied science), 15 levels deep
+...
+- Cleaning: Removed people, organizations, awards, publications, and description text
+- Total: 27,704 terms, max depth 15 levels
+```
+
+Update the three node-count occurrences to the actual count from Step 6's output
+(not assumed to be exactly 27,637 — use the real number), and update max depth if it
+changed. Rewrite the "Cleaning" bullet to accurately describe what's actually
+implemented now:
+
+```
+- Cleaning: Removed people, organizations, awards, and publications; split definition-list "Term – description" entries down to just the term; dropped unsplittable junk (leaked template CSS, empty entries)
+```
+
+- [ ] **Step 9: Load `index.html` locally and spot-check the cleaned tree**
+
+```bash
+python -m http.server 8000
+```
+
+Open `http://localhost:8000/index.html`. Search for "Group dance" — the label should
+now read exactly "Group dance", not the old run-on sentence. Expand a few branches
+under Humanities > Dance and Humanities > Philosophy (the domains with the most
+flagged names) and confirm labels look like real discipline names. Stop the server
+when done.
+
+- [ ] **Step 10: Commit the regenerated data and README**
+
+```bash
+git add taxonomy.json tree-data.js flat-data.js taxonomy_flat.json README.md
+git commit -m "Re-run pipeline with cleaned node names; fix README cleaning claim"
+```
