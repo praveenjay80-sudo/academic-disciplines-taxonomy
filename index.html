@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Academic Disciplines — Taxonomy Explorer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
+    --accent2: #e85d04; --green: #2ea043; --yellow: #e3b341;
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.6;
+  }
+  /* Header */
+  .header {
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    padding: 16px 24px; position: sticky; top: 0; z-index: 100;
+  }
+  .header h1 { color: var(--accent); font-size: 1.4em; }
+  .header .sub { color: var(--muted); font-size: 0.8em; margin-top: 2px; }
+  /* Layout */
+  .main { display: flex; max-width: 1600px; margin: 0 auto; }
+  .sidebar {
+    width: 450px; min-width: 450px; border-right: 1px solid var(--border);
+    height: calc(100vh - 80px); overflow-y: auto; position: sticky; top: 80px;
+  }
+  .content { flex: 1; padding: 24px; min-height: calc(100vh - 80px); }
+  /* Search */
+  .search-bar { padding: 12px 16px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 10; }
+  .search-bar input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; color: var(--text); padding: 8px 12px; font-size: 0.9em;
+  }
+  .search-bar input:focus { outline: none; border-color: var(--accent); }
+  /* Tree */
+  #tree { padding: 8px 0; }
+  .tree-node { padding: 1px 0; cursor: pointer; }
+  .tree-node .row { display: flex; align-items: center; padding: 2px 16px; gap: 4px; }
+  .tree-node .row:hover { background: rgba(88,166,255,0.08); }
+  .tree-node .toggle { width: 14px; text-align: center; color: var(--accent); font-size: 0.65em; transition: transform 0.1s; user-select: none; flex-shrink: 0; }
+  .tree-node .toggle.collapsed { transform: rotate(-90deg); }
+  .tree-node .dot { width: 14px; text-align: center; color: var(--muted); font-size: 0.7em; flex-shrink: 0; }
+  .tree-node .label { color: var(--text); font-size: 0.85em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tree-node .label a { color: var(--accent); text-decoration: none; }
+  .tree-node .label a:hover { text-decoration: underline; }
+  .tree-node .count { color: var(--muted); font-size: 0.7em; flex-shrink: 0; }
+  .tree-node .actions { display: none; gap: 4px; margin-left: auto; flex-shrink: 0; }
+  .tree-node .row:hover .actions { display: flex; }
+  .tree-node .actions button {
+    background: var(--border); color: var(--text); border: none; border-radius: 4px;
+    padding: 2px 6px; font-size: 0.65em; cursor: pointer; white-space: nowrap;
+  }
+  .tree-node .actions button:hover { background: var(--accent); color: var(--bg); }
+  .tree-children { display: none; }
+  .tree-children.open { display: block; }
+  /* Top-level styling */
+  #tree > .tree-node > .row > .label { font-weight: 600; font-size: 0.95em; color: #f0f6fc; }
+  /* Highlight */
+  .highlight { background: rgba(227,179,65,0.2); border-radius: 3px; }
+  .hidden-by-search { display: none !important; }
+  /* Content panel */
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+  .panel h2 { color: var(--accent); font-size: 1.1em; margin-bottom: 12px; }
+  .panel h3 { color: var(--text); font-size: 0.95em; margin: 12px 0 6px; }
+  .panel .muted { color: var(--muted); font-size: 0.8em; }
+  .breadcrumb { color: var(--muted); font-size: 0.8em; margin-bottom: 8px; }
+  .breadcrumb span { color: var(--text); }
+  /* Buttons */
+  .btn {
+    background: var(--surface); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 16px; cursor: pointer; font-size: 0.85em; transition: all 0.15s;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn-primary { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover { opacity: 0.9; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  /* Settings */
+  .settings-bar { padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+  .settings-bar input[type="password"] {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); padding: 4px 8px; font-size: 0.8em; width: 200px;
+  }
+  .settings-bar input[type="password"]:focus { outline: none; border-color: var(--accent); }
+  .settings-bar label { font-size: 0.75em; color: var(--muted); }
+  .settings-bar select {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    color: var(--text); padding: 4px 8px; font-size: 0.8em;
+  }
+  /* Output */
+  .output { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 16px; font-size: 0.85em; white-space: pre-wrap; word-wrap: break-word; max-height: 600px; overflow-y: auto; }
+  .output .item { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+  .output .item:last-child { border-bottom: none; }
+  .output .item-title { color: var(--accent); font-weight: 600; }
+  .output .item-meta { color: var(--muted); font-size: 0.85em; margin-top: 2px; }
+  .output .item-desc { color: var(--text); margin-top: 4px; }
+  .loading { color: var(--yellow); }
+  .error { color: #f85149; }
+  .success { color: var(--green); }
+  /* Tabs */
+  .tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+  .tab { padding: 8px 16px; cursor: pointer; color: var(--muted); font-size: 0.85em; border-bottom: 2px solid transparent; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  /* Badge */
+  .badge { display: inline-block; background: rgba(31,111,235,0.13); border: 1px solid rgba(31,111,235,0.27); color: var(--accent); border-radius: 20px; padding: 2px 10px; font-size: 0.7em; margin: 2px; cursor: pointer; }
+  .badge:hover { background: rgba(31,111,235,0.27); }
+  .stats { color: var(--muted); font-size: 0.75em; padding: 4px 16px; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>📚 Academic Disciplines — Taxonomy Explorer</h1>
+  <div class="sub">6,806 terms · 68 Wikipedia Outline pages · Globally deduplicated</div>
+</div>
+
+<div class="settings-bar">
+  <label>OpenRouter Key:</label>
+  <input type="password" id="apiKey" placeholder="sk-or-v1-..." />
+  <label>Model:</label>
+  <select id="model">
+    <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+    <option value="openai/gpt-4o">GPT-4o</option>
+    <option value="anthropic/claude-3.5-sonnet">Claude 3.5 Sonnet</option>
+    <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B</option>
+    <option value="google/gemini-flash-1.5">Gemini Flash 1.5</option>
+  </select>
+  <span style="flex:1"></span>
+  <span class="muted" style="font-size:0.7em">Key stored in browser only · Never sent to any server</span>
+</div>
+
+<div class="main">
+  <!-- Sidebar: Tree Browser -->
+  <div class="sidebar">
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Search 6,806 disciplines..." oninput="onSearch()">
+    </div>
+    <div class="stats" id="stats"></div>
+    <div id="tree"></div>
+  </div>
+
+  <!-- Content Panel -->
+  <div class="content">
+    <div class="tabs">
+      <div class="tab active" onclick="switchTab('reading')">📖 Reading List Generator</div>
+      <div class="tab" onclick="switchTab('scanner')">🔄 Wiki Update Scanner</div>
+    </div>
+
+    <!-- Reading List Tab -->
+    <div class="tab-content active" id="tab-reading">
+      <div class="panel">
+        <h2>📖 Exhaustive Reading List Generator</h2>
+        <p class="muted">Select a discipline from the tree, or type a topic name. Generates a structured reading list across all levels — introductory → intermediate → advanced → research frontier.</p>
+        <div style="margin: 12px 0;">
+          <strong>Selected:</strong> <span id="readingSelected" class="muted">— none — click a discipline in the tree →</span>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="generateReadingList()">Generate Reading List</button>
+          <button class="btn" onclick="exportReadingList()">Export as Markdown</button>
+        </div>
+      </div>
+      <div id="readingOutput" class="output" style="display:none;"></div>
+    </div>
+
+    <!-- Scanner Tab -->
+    <div class="tab-content" id="tab-scanner">
+      <div class="panel">
+        <h2>🔄 Wikipedia Update Scanner</h2>
+        <p class="muted">Scans the 68 Wikipedia Outline pages for new disciplines added since the last snapshot. Uses the Wikipedia API to compare current page structure against the cached taxonomy.</p>
+        <div style="margin: 12px 0;">
+          <strong>Last snapshot:</strong> <span class="muted" id="snapshotDate">2026-07-24</span>
+          <span style="margin-left: 16px;"><strong>Pages to scan:</strong> <span class="muted">68</span></span>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" onclick="runScanner()">Scan for New Disciplines</button>
+          <button class="btn" onclick="updateSnapshot()">Update Snapshot (after review)</button>
+        </div>
+        <div style="margin-top: 12px;">
+          <label style="font-size:0.8em; color:var(--muted);">Scan depth:
+            <select id="scanDepth" style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;font-size:0.8em;border-radius:4px;">
+              <option value="all">All 68 pages (full scan)</option>
+              <option value="top5">Top 5 domain pages only (quick)</option>
+            </select>
+          </label>
+        </div>
+      </div>
+      <div id="scannerOutput" class="output" style="display:none;"></div>
+    </div>
+  </div>
+</div>
+
+<script src="tree-data.js"></script>
+<script src="flat-data.js"></script>
+<script>
+// ============================================================
+// TAXONOMY DATA (loaded inline, will be replaced by fetch)
+// ============================================================
+let TAXONOMY = null;
+let FLAT_TAXONOMY = null;
+
+// ============================================================
+// LOAD TAXONOMY
+// ============================================================
+// Data loaded from separate JS files (tree-data.js and flat-data.js)
+// Expand compressed format
+function expandNode(n) {
+  return { name: n.n, sources: n.u ? [['wikipedia', n.u]] : [], children: (n.c||[]).map(expandNode) };
+}
+
+function loadTaxonomy() {
+  TAXONOMY = RAW_TREE.map(expandNode);
+  FLAT_TAXONOMY = RAW_FLAT.map(f => ({ name: f.n, path: f.p, url: f.u, depth: f.d }));
+  renderTree();
+  document.getElementById('stats').textContent = FLAT_TAXONOMY.length + ' disciplines loaded';
+}
+
+// ============================================================
+// TREE RENDERING
+// ============================================================
+function countNodes(node) {
+  let n = 1;
+  for (const c of node.children || []) n += countNodes(c);
+  return n;
+}
+
+function renderTree() {
+  const container = document.getElementById('tree');
+  container.innerHTML = '';
+  for (const node of TAXONOMY) {
+    container.appendChild(renderNode(node, 0));
+  }
+}
+
+function renderNode(node, depth) {
+  const div = document.createElement('div');
+  div.className = 'tree-node';
+  div.dataset.name = node.name.toLowerCase();
+
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.style.paddingLeft = (16 + depth * 16) + 'px';
+
+  const children = node.children || [];
+  const hasChildren = children.length > 0;
+
+  // Toggle
+  const toggle = document.createElement('span');
+  toggle.className = 'toggle collapsed';
+  toggle.textContent = '▼';
+  toggle.onclick = (e) => {
+    e.stopPropagation();
+    const childContainer = div.querySelector(':scope > .tree-children');
+    if (childContainer) {
+      const isOpen = childContainer.classList.toggle('open');
+      toggle.classList.toggle('collapsed', !isOpen);
+    }
+  };
+  if (!hasChildren) { toggle.style.visibility = 'hidden'; }
+  row.appendChild(toggle);
+
+  // Dot or label
+  const label = document.createElement('span');
+  label.className = 'label';
+  // Get URL
+  let url = '';
+  for (const [src, u] of (node.sources || [])) {
+    if (src === 'wikipedia') { url = u; break; }
+  }
+  if (!url && node.sources && node.sources.length) url = node.sources[0][1];
+  if (url) {
+    label.innerHTML = `<a href="${escHtml(url)}" target="_blank" rel="noopener">${escHtml(node.name)}</a>`;
+  } else {
+    label.textContent = node.name;
+  }
+  row.appendChild(label);
+
+  // Count
+  if (hasChildren) {
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = `(${countNodes(node)})`;
+    row.appendChild(count);
+  }
+
+  // Actions
+  const actions = document.createElement('span');
+  actions.className = 'actions';
+  const readBtn = document.createElement('button');
+  readBtn.textContent = '📖';
+  readBtn.title = 'Generate reading list';
+  readBtn.onclick = (e) => { e.stopPropagation(); selectForReading(node); };
+  actions.appendChild(readBtn);
+  row.appendChild(actions);
+
+  // Click to select
+  row.onclick = () => selectForReading(node);
+
+  div.appendChild(row);
+
+  // Children
+  if (hasChildren) {
+    const childContainer = document.createElement('div');
+    childContainer.className = 'tree-children';
+    for (const child of children) {
+      childContainer.appendChild(renderNode(child, depth + 1));
+    }
+    div.appendChild(childContainer);
+  }
+
+  return div;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ============================================================
+// SEARCH
+// ============================================================
+function onSearch() {
+  const query = document.getElementById('searchInput').value.toLowerCase().trim();
+  const allNodes = document.querySelectorAll('.tree-node');
+  const stats = document.getElementById('stats');
+
+  if (!query) {
+    allNodes.forEach(n => { n.classList.remove('hidden-by-search'); n.classList.remove('highlight'); });
+    // Collapse all
+    allNodes.forEach(n => {
+      const tc = n.querySelector(':scope > .tree-children');
+      const tg = n.querySelector(':scope > .row > .toggle');
+      if (tc) { tc.classList.remove('open'); if (tg) tg.classList.add('collapsed'); }
+    });
+    stats.textContent = `${FLAT_TAXONOMY.length} disciplines loaded`;
+    return;
+  }
+
+  // Expand all
+  allNodes.forEach(n => {
+    const tc = n.querySelector(':scope > .tree-children');
+    const tg = n.querySelector(':scope > .row > .toggle');
+    if (tc) { tc.classList.add('open'); if (tg) tg.classList.remove('collapsed'); }
+  });
+
+  // Filter
+  let matchCount = 0;
+  allNodes.forEach(n => { n.classList.add('hidden-by-search'); n.classList.remove('highlight'); });
+
+  allNodes.forEach(n => {
+    const name = n.dataset.name || '';
+    if (name.includes(query)) {
+      matchCount++;
+      n.classList.remove('hidden-by-search');
+      n.classList.add('highlight');
+      // Show ancestors
+      let parent = n.parentElement;
+      while (parent && parent.id !== 'tree') {
+        if (parent.classList.contains('tree-node')) parent.classList.remove('hidden-by-search');
+        parent = parent.parentElement;
+      }
+    }
+  });
+
+  stats.textContent = `${matchCount} matches for "${query}"`;
+}
+
+// ============================================================
+// READING LIST SELECT
+// ============================================================
+let selectedNode = null;
+let lastReadingList = null;
+
+function selectForReading(node) {
+  selectedNode = node;
+  // Build breadcrumb path
+  const path = findPath(TAXONOMY, node.name);
+  const display = path ? path.join(' → ') : node.name;
+  document.getElementById('readingSelected').textContent = display;
+  document.getElementById('readingSelected').style.color = 'var(--accent)';
+}
+
+function findPath(tree, name, path) {
+  path = path || [];
+  for (const node of tree) {
+    const current = path.concat([node.name]);
+    if (node.name === name) return current;
+    if (node.children) {
+      const found = findPath(node.children, name, current);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// ============================================================
+// READING LIST GENERATOR (Feature 2)
+// ============================================================
+async function generateReadingList() {
+  if (!selectedNode) {
+    alert('Please select a discipline from the tree first.');
+    return;
+  }
+  const apiKey = document.getElementById('apiKey').value.trim();
+  if (!apiKey) {
+    alert('Please enter your OpenRouter API key in the settings bar above.');
+    return;
+  }
+
+  const model = document.getElementById('model').value;
+  const output = document.getElementById('readingOutput');
+  output.style.display = 'block';
+  output.innerHTML = '<div class="loading">⏳ Generating exhaustive reading list for "' + selectedNode.name + '"... This may take 30-60 seconds.</div>';
+
+  // Build context: the discipline name, its path, and its children
+  const path = findPath(TAXONOMY, selectedNode.name) || [selectedNode.name];
+  const children = (selectedNode.children || []).map(c => c.name);
+  const grandchildren = [];
+  for (const c of (selectedNode.children || [])) {
+    for (const gc of (c.children || [])) {
+      grandchildren.push(`${c.name} > ${gc.name}`);
+    }
+  }
+
+  const prompt = `You are an expert academic librarian. Generate an EXHAUSTIVE reading list for the academic discipline: "${selectedNode.name}"
+
+Context:
+- Path in taxonomy: ${path.join(' → ')}
+- Direct sub-fields: ${children.join(', ') || 'none'}
+- Sub-sub-fields: ${grandchildren.join('; ') || 'none'}
+
+Generate a structured reading list with these sections:
+1. FOUNDATIONAL TEXTS (3-5 books) — The canonical texts every student must read
+2. INTRODUCTORY (3-5 books/courses) — Accessible entry points for beginners
+3. INTERMEDIATE (5-8 books) — Core textbooks for undergraduate/early graduate level
+4. ADVANCED (5-8 books/papers) — Graduate-level and specialist texts
+5. RESEARCH FRONTIER (3-5 seminal papers/recent works) — Cutting-edge and highly cited
+6. CROSS-DISCIPLINARY (3-5 works) — Essential readings from adjacent fields
+7. REFERENCE WORKS (2-4) — Handbooks, encyclopedias, companions
+8. JOURNALS (3-5) — Top journals in the field
+9. ONLINE RESOURCES (3-5) — Key websites, databases, lecture series
+
+For each item, format as:
+**[Title]** by [Author] ([Year])
+Type: [Book/Textbook/Paper/Journal/Course/Website]
+Level: [Foundational/Introductory/Intermediate/Advanced/Frontier]
+Why: [1-2 sentence justification]
+
+Be specific with real titles, real authors, real publication years. No placeholder text. If you are unsure about a specific title, omit it rather than guessing.
+
+Return as structured JSON array:
+[{"section": "...", "title": "...", "author": "...", "year": "...", "type": "...", "level": "...", "why": "..."}]`;
+
+  try {
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.3,
+        max_tokens: 4000,
+      })
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`API ${resp.status}: ${errText.substring(0, 200)}`);
+    }
+
+    const data = await resp.json();
+    const content = data.choices[0].message.content;
+
+    // Try to parse JSON from the response
+    let items = [];
+    const jsonMatch = content.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      try { items = JSON.parse(jsonMatch[0]); } catch(e) {}
+    }
+
+    lastReadingList = { topic: selectedNode.name, items: items, raw: content };
+
+    if (items.length > 0) {
+      renderReadingList(items);
+    } else {
+      // Show raw text if JSON parse failed
+      output.innerHTML = `<div style="white-space:pre-wrap">${escHtml(content)}</div>`;
+    }
+  } catch (e) {
+    output.innerHTML = `<div class="error">❌ Error: ${escHtml(e.message)}</div>`;
+  }
+}
+
+function renderReadingList(items) {
+  const output = document.getElementById('readingOutput');
+  const sections = {};
+  for (const item of items) {
+    const sec = item.section || 'Other';
+    if (!sections[sec]) sections[sec] = [];
+    sections[sec].push(item);
+  }
+
+  let html = `<div style="margin-bottom:16px"><strong style="color:var(--accent);font-size:1.1em">📖 Reading List: ${escHtml(selectedNode.name)}</strong><br><span class="muted">${items.length} items · Generated via OpenRouter</span></div>`;
+
+  for (const [section, sectionItems] of Object.entries(sections)) {
+    html += `<div style="margin-bottom:16px"><h3 style="color:var(--accent2);border-bottom:1px solid var(--border);padding-bottom:4px">${escHtml(section)} (${sectionItems.length})</h3>`;
+    for (const item of sectionItems) {
+      html += `<div class="item">
+        <div class="item-title">${escHtml(item.title || '')}</div>
+        <div class="item-meta">${escHtml(item.author || '')} ${item.year ? '· ' + escHtml(item.year) : ''} · ${escHtml(item.type || '')} · ${escHtml(item.level || '')}</div>
+        <div class="item-desc">${escHtml(item.why || '')}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  output.innerHTML = html;
+}
+
+function exportReadingList() {
+  if (!lastReadingList) {
+    alert('Generate a reading list first.');
+    return;
+  }
+  let md = `# Reading List: ${lastReadingList.topic}\n\n`;
+  if (lastReadingList.items.length > 0) {
+    const sections = {};
+    for (const item of lastReadingList.items) {
+      const sec = item.section || 'Other';
+      if (!sections[sec]) sections[sec] = [];
+      sections[sec].push(item);
+    }
+    for (const [section, items] of Object.entries(sections)) {
+      md += `## ${section}\n\n`;
+      for (const item of items) {
+        md += `### ${item.title}\n`;
+        md += `- **Author:** ${item.author || 'N/A'}\n`;
+        md += `- **Year:** ${item.year || 'N/A'}\n`;
+        md += `- **Type:** ${item.type || 'N/A'}\n`;
+        md += `- **Level:** ${item.level || 'N/A'}\n`;
+        md += `- **Why:** ${item.why || 'N/A'}\n\n`;
+      }
+    }
+  } else {
+    md += lastReadingList.raw;
+  }
+  // Download
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `reading-list-${lastReadingList.topic.toLowerCase().replace(/\s+/g, '-')}.md`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ============================================================
+// WIKIPEDIA UPDATE SCANNER (Feature 1)
+// ============================================================
+// List of Wikipedia Outline pages to scan
+const WIKI_PAGES = [
+  'Outline_of_academic_disciplines', 'Outline_of_accounting', 'Outline_of_agriculture',
+  'Outline_of_anthropology', 'Outline_of_applied_science', 'Outline_of_archaeology',
+  'Outline_of_architecture', 'Outline_of_artificial_intelligence', 'Outline_of_astronomy',
+  'Outline_of_biology', 'Outline_of_business', 'Outline_of_chemistry',
+  'Outline_of_cognitive_science', 'Outline_of_communication', 'Outline_of_computer_science',
+  'Outline_of_cooking', 'Outline_of_cryptography', 'Outline_of_cuisines',
+  'Outline_of_culture', 'Outline_of_dance', 'Outline_of_database_concepts',
+  'Outline_of_earth_science', 'Outline_of_economics', 'Outline_of_education',
+  'Outline_of_energy', 'Outline_of_energy_development', 'Outline_of_energy_storage',
+  'Outline_of_engineering', 'Outline_of_film', 'Outline_of_finance',
+  'Outline_of_food_preparation', 'Outline_of_formal_science', 'Outline_of_geography',
+  'Outline_of_health', 'Outline_of_history', 'Outline_of_journalism',
+  'Outline_of_law', 'Outline_of_linguistics', 'Outline_of_literature',
+  'Outline_of_logic', 'Outline_of_machine_learning', 'Outline_of_management',
+  'Outline_of_marketing', 'Outline_of_mathematics', 'Outline_of_medicine',
+  'Outline_of_military_science_and_technology', 'Outline_of_music',
+  'Outline_of_natural_science', 'Outline_of_neuroscience', 'Outline_of_nutrition',
+  'Outline_of_performing_arts', 'Outline_of_philosophy', 'Outline_of_physical_exercise',
+  'Outline_of_physics', 'Outline_of_political_science', 'Outline_of_programming_languages',
+  'Outline_of_psychology', 'Outline_of_religion', 'Outline_of_robotics',
+  'Outline_of_social_science', 'Outline_of_sociology', 'Outline_of_software_engineering',
+  'Outline_of_sports', 'Outline_of_statistics', 'Outline_of_television_broadcasting',
+  'Outline_of_the_Internet', 'Outline_of_the_arts', 'Outline_of_the_humanities',
+  'Outline_of_the_visual_arts', 'Outline_of_theatre', 'Outline_of_transport',
+  'Outline_of_video_games',
+];
+
+async function runScanner() {
+  const apiKey = document.getElementById('apiKey').value.trim();
+  const output = document.getElementById('scannerOutput');
+  const depth = document.getElementById('scanDepth').value;
+  const pagesToScan = depth === 'top5' ? WIKI_PAGES.slice(0, 5) : WIKI_PAGES;
+
+  output.style.display = 'block';
+  output.innerHTML = '<div class="loading">⏳ Scanning ' + pagesToScan.length + ' Wikipedia Outline pages for new disciplines...</div>';
+
+  // Build a set of known discipline names (normalized)
+  const knownNames = new Set(FLAT_TAXONOMY.map(d => d.name.toLowerCase().trim()));
+
+  const newEntries = [];
+  const errors = [];
+
+  for (let i = 0; i < pagesToScan.length; i++) {
+    const page = pagesToScan[i];
+    output.innerHTML = `<div class="loading">⏳ Scanning ${i+1}/${pagesToScan.length}: ${page}...</div>`;
+
+    try {
+      // Fetch the Wikipedia page via API
+      const apiUrl = `https://en.wikipedia.org/w/api.php?action=parse&page=${page}&format=json&prop=text&redirects=1&origin=*`;
+      const resp = await fetch(apiUrl);
+      const data = await resp.json();
+
+      if (data.parse && data.parse.text) {
+        // Parse the HTML to extract discipline names
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(data.parse.text['*'], 'text/html');
+
+        // Extract all <li> text from the page
+        const items = doc.querySelectorAll('li a');
+        for (const a of items) {
+          const text = a.textContent.trim();
+          if (text.length < 3) continue;
+          const norm = text.toLowerCase().trim();
+          if (!knownNames.has(norm)) {
+            // Potential new entry
+            const href = a.getAttribute('href') || '';
+            if (href.startsWith('/wiki/') && !href.includes(':') && !href.includes('Special:')) {
+              const url = 'https://en.wikipedia.org' + href;
+              newEntries.push({ name: text, url: url, source_page: page });
+              knownNames.add(norm); // Avoid duplicates within scan
+            }
+          }
+        }
+      }
+    } catch (e) {
+      errors.push({ page: page, error: e.message });
+    }
+
+    // Rate limit: 200ms between requests
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  // Render results
+  let html = '';
+
+  if (newEntries.length === 0 && errors.length === 0) {
+    html = '<div class="success">✅ No new disciplines found. The taxonomy is up to date.</div>';
+  } else {
+    if (newEntries.length > 0) {
+      html += `<div style="margin-bottom:16px"><strong style="color:var(--green);font-size:1.1em">🆕 ${newEntries.length} potential new disciplines found</strong></div>`;
+      html += '<div style="margin-bottom:12px"><button class="btn btn-primary" onclick="exportNewEntries()">Export as JSON</button></div>';
+
+      // Group by source page
+      const byPage = {};
+      for (const e of newEntries) {
+        if (!byPage[e.source_page]) byPage[e.source_page] = [];
+        byPage[e.source_page].push(e);
+      }
+
+      for (const [page, entries] of Object.entries(byPage)) {
+        html += `<h3 style="color:var(--accent2)">${page} (${entries.length})</h3>`;
+        for (const e of entries) {
+          html += `<div class="item"><div class="item-title"><a href="${e.url}" target="_blank" rel="noopener" style="color:var(--accent)">${escHtml(e.name)}</a></div><div class="item-meta">Found on: ${e.source_page}</div></div>`;
+        }
+      }
+    }
+
+    if (errors.length > 0) {
+      html += `<div class="error" style="margin-top:16px">⚠️ ${errors.length} pages failed to scan:</div>`;
+      for (const e of errors) {
+        html += `<div class="item-meta">${e.page}: ${escHtml(e.error)}</div>`;
+      }
+    }
+  }
+
+  output.innerHTML = html;
+
+  // Store for export
+  window._newEntries = newEntries;
+}
+
+function exportNewEntries() {
+  if (!window._newEntries || window._newEntries.length === 0) return;
+  const blob = new Blob([JSON.stringify(window._newEntries, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'new-disciplines.json';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function updateSnapshot() {
+  // In a full app, this would update the cached taxonomy.json
+  alert('Snapshot update: In a deployed version, this would update the cached taxonomy with the new entries. For now, review the new entries and manually add them to taxonomy.json if desired.');
+}
+
+// ============================================================
+// TABS
+// ============================================================
+function switchTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + tab).classList.add('active');
+}
+
+// ============================================================
+// INIT
+// ============================================================
+// Save API key to localStorage
+document.getElementById('apiKey').value = localStorage.getItem('openrouter_key') || '';
+document.getElementById('model').value = localStorage.getItem('openrouter_model') || 'openai/gpt-4o-mini';
+document.getElementById('apiKey').addEventListener('change', e => localStorage.setItem('openrouter_key', e.target.value));
+document.getElementById('model').addEventListener('change', e => localStorage.setItem('openrouter_model', e.target.value));
+
+loadTaxonomy();
+</script>
+
+</body>
+</html>
