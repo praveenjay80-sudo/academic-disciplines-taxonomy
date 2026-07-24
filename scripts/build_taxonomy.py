@@ -13,6 +13,15 @@ import re
 import time
 import urllib.request
 
+def normalize_name(name):
+    """Normalize a discipline name for deduplication comparisons."""
+    name = name.lower().strip()
+    name = re.sub(r'\s*\(outline\)\s*', '', name)
+    name = name.rstrip('.,;:')
+    name = ' '.join(name.split())
+    return name
+
+
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(SCRIPT_DIR, '.cache_wiki')
 REPO_DIR = os.path.dirname(SCRIPT_DIR)
@@ -90,6 +99,145 @@ def load_page_html(title):
         time.sleep(1)
         return html
     return None
+
+
+SKIP_SECTIONS = {
+    'See also', 'Notes', 'Further reading', 'External links',
+    'References', 'Bibliography', 'Sources', 'Citations',
+    'Works cited', 'Footnotes',
+}
+
+SKIP_DIV_CLASSES = [
+    'hatnote', 'navbox', 'mw-heading', 'noprint', 'reflist',
+    'navbox-styles', 'shortdescription', 'mw-references-wrap',
+    'gallery', 'thumb', 'mw-empty-elt', 'sidebar', 'quotebox',
+    'ambox', 'infobox', 'mw-cite-backlink', 'reference',
+]
+
+
+def parse_wiki_html_to_tree(html_text, source_page):
+    """Parse a Wikipedia outline page's HTML into a hierarchical tree.
+
+    Each node: {'name': str, 'sources': [(source, url), ...], 'children': [...]}.
+    Heading nodes additionally carry a transient 'level' key.
+    """
+    from bs4 import BeautifulSoup, NavigableString, Tag
+
+    soup = BeautifulSoup(html_text, 'html.parser')
+    content = soup.find('div', class_='mw-parser-output')
+    if not content:
+        return []
+
+    def get_heading_info(elem):
+        if elem.name == 'div' and 'mw-heading' in (elem.get('class') or []):
+            for h in elem.find_all(['h2', 'h3', 'h4', 'h5', 'h6']):
+                text = h.get_text(strip=True).replace('[edit]', '').strip()
+                return (int(h.name[1]), text)
+        if elem.name in ('h2', 'h3', 'h4', 'h5', 'h6'):
+            text = elem.get_text(strip=True).replace('[edit]', '').strip()
+            return (int(elem.name[1]), text)
+        return None
+
+    def parse_list_item(li):
+        node = {'name': '', 'sources': [], 'children': []}
+        parts = []
+        first_link = True
+        for child in li.children:
+            if isinstance(child, Tag):
+                if child.name == 'ul':
+                    for sub_li in child.find_all('li', recursive=False):
+                        node['children'].append(parse_list_item(sub_li))
+                elif child.name == 'a':
+                    href = child.get('href', '')
+                    text = child.get_text(strip=True)
+                    parts.append(text)
+                    if first_link and 'outline' not in text.lower():
+                        if href.startswith('/wiki/'):
+                            node['sources'].append(('wikipedia', 'https://en.wikipedia.org' + href))
+                            first_link = False
+                        elif href.startswith('http'):
+                            node['sources'].append(('wikipedia', href))
+                            first_link = False
+                elif child.name == 'sup':
+                    continue
+                else:
+                    text = child.get_text(strip=True)
+                    if text:
+                        parts.append(text)
+            elif isinstance(child, NavigableString):
+                text = str(child).strip()
+                if text:
+                    parts.append(text)
+
+        node['name'] = ' '.join(' '.join(parts).split())
+        if not node['sources']:
+            node['sources'].append(('wikipedia', f'https://en.wikipedia.org/wiki/{source_page}'))
+        return node
+
+    def is_content_div(elem):
+        if elem.name != 'div':
+            return False
+        cls = elem.get('class', [])
+        return not any(sc in cls for sc in SKIP_DIV_CLASSES)
+
+    def extract_all_lists(elem):
+        items = []
+        top_level_uls = []
+        for ul in elem.find_all('ul'):
+            parent = ul.parent
+            is_nested = False
+            while parent and parent != elem:
+                if parent.name == 'li':
+                    is_nested = True
+                    break
+                parent = parent.parent
+            if not is_nested:
+                top_level_uls.append(ul)
+        for ul in top_level_uls:
+            for li in ul.find_all('li', recursive=False):
+                items.append(parse_list_item(li))
+        return items
+
+    tree = []
+    section_stack = []
+
+    for child in content.children:
+        if not isinstance(child, Tag):
+            continue
+
+        heading_info = get_heading_info(child)
+        if heading_info:
+            level, text = heading_info
+            if text in SKIP_SECTIONS:
+                section_stack = []
+                continue
+
+            node = {
+                'name': text,
+                'sources': [('wikipedia', f'https://en.wikipedia.org/wiki/{source_page}#{text.replace(" ", "_")}')],
+                'children': [],
+                'level': level,
+            }
+            while section_stack and section_stack[-1][0] >= level:
+                section_stack.pop()
+            if section_stack:
+                section_stack[-1][2]['children'].append(node)
+            else:
+                tree.append(node)
+            section_stack.append((level, text, node))
+
+        elif section_stack:
+            items = []
+            if child.name == 'div' and 'div-col' in (child.get('class') or []):
+                items = extract_all_lists(child)
+            elif child.name == 'ul':
+                for li in child.find_all('li', recursive=False):
+                    items.append(parse_list_item(li))
+            elif is_content_div(child):
+                items = extract_all_lists(child)
+            section_stack[-1][2]['children'].extend(items)
+
+    return tree
 
 
 if __name__ == '__main__':
