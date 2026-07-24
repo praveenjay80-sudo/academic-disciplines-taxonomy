@@ -63,10 +63,11 @@ def main():
     for n in tree:
         print(f'  {n["name"]}: {count_nodes(n)}')
 
+    # A single call wrapping the whole tree checks the top-level domain
+    # names against each other AND recurses into every descendant exactly
+    # once — looping per-domain first and then re-wrapping the whole tree
+    # re-walks (and double-reports) every nested duplicate a second time.
     errors = []
-    for node in tree:
-        check_duplicates(node, [node['name']], errors)
-    # also check duplicates among the top-level domain nodes themselves
     check_duplicates({'children': tree}, [], errors)
 
     warnings = []
