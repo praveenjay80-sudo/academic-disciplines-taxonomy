@@ -210,5 +210,52 @@ class TestResolvedPageTitle(unittest.TestCase):
         self.assertIsNone(_resolved_page_title('<div>no edit links here</div>'))
 
 
+from build_taxonomy import clean_node_name, clean_tree_names
+
+
+class TestCleanNodeName(unittest.TestCase):
+    def test_splits_en_dash_definition_style_name(self):
+        self.assertEqual(
+            clean_node_name('Group dance – dance danced by a group of people'),
+            'Group dance',
+        )
+
+    def test_splits_em_dash_definition_style_name(self):
+        self.assertEqual(
+            clean_node_name('Foo — a long description of foo'),
+            'Foo',
+        )
+
+    def test_splits_long_hyphen_separated_name(self):
+        long_desc = 'x' * 70
+        self.assertEqual(clean_node_name(f'Bar - {long_desc}'), 'Bar')
+
+    def test_leaves_short_hyphenated_name_alone(self):
+        self.assertEqual(clean_node_name('Sino-Japanese relations'), 'Sino-Japanese relations')
+
+    def test_drops_empty_name(self):
+        self.assertIsNone(clean_node_name('   '))
+
+    def test_drops_unsplittable_junk_over_length_limit(self):
+        junk = '.mw-parser-output .vanchor{background:#fff}' * 10
+        self.assertIsNone(clean_node_name(junk))
+
+    def test_collapses_internal_whitespace(self):
+        self.assertEqual(clean_node_name('Foo   Bar'), 'Foo Bar')
+
+
+class TestCleanTreeNames(unittest.TestCase):
+    def test_splices_children_of_dropped_junk_node(self):
+        tree = [make_node('Root', [
+            {'name': '', 'sources': [], 'children': [make_node('Orphan child')]},
+            make_node('Kept – some long description here'),
+        ])]
+        cleaned = clean_tree_names(tree)
+        names = [c['name'] for c in cleaned[0]['children']]
+        self.assertIn('Orphan child', names)
+        self.assertIn('Kept', names)
+        self.assertNotIn('', names)
+
+
 if __name__ == '__main__':
     unittest.main()

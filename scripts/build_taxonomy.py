@@ -302,6 +302,47 @@ def dedup_forest(nodes):
     return merged
 
 
+# Node names above this length with no clean separator to split at are
+# treated as junk (leaked Wikipedia CSS, full bibliographic citations, etc)
+# rather than real discipline names, and dropped.
+JUNK_NAME_MAX_LEN = 200
+
+
+def clean_node_name(name):
+    """Split Wikipedia definition-list-style 'Term – long description' names
+    down to just the term. Returns the cleaned name, or None if the node is
+    junk (empty, or too long with no clean split point) and should be dropped."""
+    name = ' '.join(name.split())
+    for sep in (' – ', ' — '):
+        if sep in name:
+            name = name.split(sep, 1)[0].strip()
+            break
+    else:
+        if len(name) > 60 and ' - ' in name:
+            name = name.split(' - ', 1)[0].strip()
+    if not name:
+        return None
+    if len(name) > JUNK_NAME_MAX_LEN:
+        return None
+    return name
+
+
+def clean_tree_names(nodes):
+    """Recursively clean/split node names. A node that cleans to junk is
+    removed, and its own (already-cleaned) children are spliced into its
+    position so real sub-disciplines under a junk entry aren't lost."""
+    cleaned = []
+    for node in nodes:
+        node['children'] = clean_tree_names(node.get('children', []))
+        new_name = clean_node_name(node['name'])
+        if new_name is None:
+            cleaned.extend(node['children'])
+        else:
+            node['name'] = new_name
+            cleaned.append(node)
+    return cleaned
+
+
 def topic_candidates(page_title):
     """Candidate discipline names to search for, derived from an outline page title."""
     base = page_title
@@ -512,6 +553,10 @@ def build_taxonomy():
         anchor_name = merge_page_into_skeleton(skeleton, title, page_tree)
         print(f'  merged {title} -> {anchor_name}')
 
+    skeleton = clean_tree_names(skeleton)
+    # Cleaning can turn two previously-distinct names into the same name
+    # (e.g. two different long descriptions that both start with "History"),
+    # so dedup must run after cleaning, not before.
     skeleton = dedup_forest(skeleton)
     for node in skeleton:
         cleanup_node(node)
