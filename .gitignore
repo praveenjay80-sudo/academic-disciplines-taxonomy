@@ -1,1 +1,4 @@
 .worktrees/
+scripts/.cache_wiki/
+__pycache__/
+*.pyc
