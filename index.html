@@ -809,13 +809,25 @@ function findNodeInTree(nodes, targetLower, ancestorPath) {
   return null;
 }
 
+// A topic name can genuinely exist in more than one real classification
+// (e.g. "Quantum optics" is a bare, childless leaf in MSC2020/math AND a
+// richly-developed 15-child node in PhySH/physics) — searching every field
+// and preferring whichever match has the most children picks the field
+// that's actually the topic's real home, rather than silently returning
+// whichever field happens to come first in fieldTreesData's key order.
 function findNodeInFieldTrees(fieldTreesData, name) {
   const targetLower = normalizeForMatch(name);
+  let best = null;
   for (const fieldKey of Object.keys(fieldTreesData)) {
     const found = findNodeInTree(fieldTreesData[fieldKey] || [], targetLower, []);
-    if (found) return { fieldKey, path: found.path, node: found.node };
+    if (!found) continue;
+    const childCount = (found.node.c || []).length;
+    if (!best || childCount > best.childCount) {
+      best = { fieldKey, path: found.path, node: found.node, childCount };
+    }
   }
-  return null;
+  if (!best) return null;
+  return { fieldKey: best.fieldKey, path: best.path, node: best.node };
 }
 
 function renderFieldTreeNode(fieldKey, node, path, depth) {
