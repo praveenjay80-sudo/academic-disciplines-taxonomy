@@ -146,6 +146,19 @@
   .question-item { margin-bottom: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; }
   .question-item .q { color: var(--text); font-weight: 600; font-size: 0.86em; }
   .question-item .why { color: var(--muted); font-size: 0.78em; margin-top: 2px; }
+  .path-form { max-width: 520px; }
+  .path-form label { display: block; color: var(--muted); font-size: 0.8em; margin: 14px 0 4px; }
+  .path-form input[type="text"] { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); padding: 8px 10px; font-size: 0.9em; }
+  .path-timeline { max-width: 760px; margin-top: 8px; }
+  .path-stage { position: relative; padding: 0 0 24px 28px; border-left: 2px solid var(--border); }
+  .path-stage:last-child { border-left-color: transparent; padding-bottom: 0; }
+  .path-stage .marker { position: absolute; left: -7px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--bg); border: 2px solid var(--muted); }
+  .path-stage.target .marker { background: var(--accent); border-color: var(--accent); width: 16px; height: 16px; left: -9px; }
+  .path-stage .stage-name { color: var(--text); font-weight: 600; font-size: 0.95em; }
+  .path-stage.target .stage-name { color: var(--accent); font-size: 1.05em; }
+  .path-stage .stage-desc { color: var(--muted); font-size: 0.82em; margin-top: 2px; max-width: 640px; }
+  .path-stage .stage-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .path-stage-kind { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.04em; }
 </style>
 </head>
 <body>
@@ -366,6 +379,7 @@ function renderFieldTabs() {
     { key: 'physics', label: 'Physics' },
     { key: 'cs-theory', label: 'Computer Science' },
     { key: 'philosophy', label: 'Philosophy', disabled: true },
+    { key: 'path', label: '🧭 Learning Path' },
   ];
   container.innerHTML = '';
   for (const t of tabs) {
@@ -394,12 +408,39 @@ async function switchMainTab(tab) {
       : '<div class="empty-state"><h2>Pick a starting point</h2><p>Type a topic, or click one of the domains on the left.</p></div>';
     return;
   }
+  if (tab === 'path') {
+    exploreSidebar.style.display = 'none';
+    fieldSidebar.style.display = 'none';
+    renderPathForm();
+    return;
+  }
   exploreSidebar.style.display = 'none';
   fieldSidebar.style.display = '';
   document.getElementById('fieldTreeFilter').value = '';
   await loadFieldTree(tab);
   renderFieldTreeSidebar(tab);
   document.getElementById('content').innerHTML = `<div class="empty-state"><h2>${escHtml(FIELD_TREES[tab].label)}</h2><p>Click any topic on the left to see its key questions and reading list.</p></div>`;
+}
+
+function renderPathForm() {
+  document.getElementById('content').innerHTML = `
+    <div class="node-header"><h2>🧭 Learning Path</h2></div>
+    <p class="node-desc">Enter a topic and (optionally) what you already know — this builds one continuous
+    path from genuine prerequisites through the topic to its real research-frontier specializations.</p>
+    <div class="path-form">
+      <label>Target topic</label>
+      <input type="text" id="pathTargetInput" placeholder="e.g. quantum mechanics" />
+      <label>What you already know (optional)</label>
+      <input type="text" id="pathBackgroundInput" placeholder="e.g. I know calculus" />
+      <div style="margin-top:16px"><button class="btn btn-primary" onclick="onPathSubmit()">Build path</button></div>
+    </div>
+  `;
+}
+
+function onPathSubmit() {
+  const target = document.getElementById('pathTargetInput').value.trim();
+  if (!target) return;
+  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div><div class="loading">⏳ Path generation not implemented yet (Task 4).</div>`;
 }
 
 async function loadFieldTree(key) {
