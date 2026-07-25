@@ -403,6 +403,34 @@ function countFieldNodes(nodes) {
   return nodes.reduce((sum, n) => sum + 1 + countFieldNodes(n.c || []), 0);
 }
 
+// ============================================================
+// LEARNING PATH: real-tree node search
+// ============================================================
+function normalizeForMatch(s) {
+  return (s || '').trim().toLowerCase();
+}
+
+function findNodeInTree(nodes, targetLower, ancestorPath) {
+  for (const node of nodes) {
+    const path = [...ancestorPath, node.n];
+    if (normalizeForMatch(node.n) === targetLower) return { path, node };
+    if (Array.isArray(node.c) && node.c.length) {
+      const found = findNodeInTree(node.c, targetLower, path);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findNodeInFieldTrees(fieldTreesData, name) {
+  const targetLower = normalizeForMatch(name);
+  for (const fieldKey of Object.keys(fieldTreesData)) {
+    const found = findNodeInTree(fieldTreesData[fieldKey] || [], targetLower, []);
+    if (found) return { fieldKey, path: found.path, node: found.node };
+  }
+  return null;
+}
+
 function renderFieldTreeNode(fieldKey, node, path, depth) {
   const div = document.createElement('div');
   div.className = 'ftree-node';
@@ -1036,6 +1064,35 @@ Return ONLY a single JSON object (no markdown fences, no commentary) with this e
 
 Only include entries if the field genuinely has distinct competing paradigms/schools of thought; if it
 doesn't (e.g. a narrow technical topic), return an empty array rather than inventing false divisions.`;
+}
+
+function buildPrerequisiteChainPrompt(topic, grounding, background) {
+  const backgroundBlock = (background && background.trim())
+    ? `The learner has told you what they already know: "${background.trim()}"\nStill list the FULL genuine prerequisite chain — do not omit or skip a real prerequisite just because it overlaps with this. Just keep the "description" for any prerequisite substantially covered by what they already know appropriately brief (a short acknowledgement is fine) rather than explaining it from scratch.`
+    : `No background was given — write each description assuming the learner has none of the prerequisites yet.`;
+
+  return `You are building the genuine PEDAGOGICAL prerequisite chain for learning "${topic}" from zero —
+the real sequence of topics a learner needs, roughly foundational-to-advanced, ending JUST BEFORE
+"${topic}" itself (do not include "${topic}" as one of the prerequisites).
+
+${groundingBlockFor(grounding)}
+${backgroundBlock}
+
+This is a LEARNING/PEDAGOGICAL order, not a library-classification hierarchy — do not just list broader
+subject categories "${topic}" happens to be filed under; list what someone genuinely needs to have
+learned first to understand "${topic}".
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "prerequisites": [
+    {"name": "Clean short topic name", "description": "1-2 sentences: what this covers and why it's needed before ${JSON.stringify(topic)}"}
+  ]
+}
+
+Order matters — earliest/most foundational first. Include every genuine prerequisite, but do not pad
+with near-duplicates or overly narrow sub-steps; each entry should be a real, recognizable topic in its
+own right (the kind of thing that could itself be a subject heading), not a granular lesson-plan step.`;
 }
 
 function extractJson(text) {
