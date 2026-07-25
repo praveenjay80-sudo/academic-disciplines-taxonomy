@@ -547,8 +547,29 @@ async function buildLearningPath(target, background) {
   renderPathTimeline(stages, target, background);
 }
 
-async function ensureStageNodeRecord(stage) {
+// generateAndRenderStage fires generateStageKeyQuestions and
+// generateStageReadingList concurrently for the same stage (Promise.all),
+// and each independently calls ensureStageNodeRecord. Without dedup, both
+// would dbGet/create/mutate SEPARATE in-memory copies of the same record
+// and the later dbPut would silently clobber the other's field (lost
+// update). Caching the in-flight promise per key means every concurrent
+// caller awaits the SAME object reference, so their later independent
+// dbPut calls each carry both mutations rather than racing. Cleared once
+// resolved so a later, non-overlapping call (a retry after this settles,
+// or a future revisit) still does a fresh dbGet reflecting current state.
+const stageNodeRecordPromises = new Map();
+
+function ensureStageNodeRecord(stage) {
   const key = pathKey(stage.path);
+  if (stageNodeRecordPromises.has(key)) return stageNodeRecordPromises.get(key);
+  const promise = ensureStageNodeRecordUncached(stage, key).finally(() => {
+    stageNodeRecordPromises.delete(key);
+  });
+  stageNodeRecordPromises.set(key, promise);
+  return promise;
+}
+
+async function ensureStageNodeRecordUncached(stage, key) {
   const existing = await dbGet(key);
   if (existing) return existing;
 
