@@ -651,9 +651,34 @@ function retryPathStage(index) {
   generateAndRenderStage(stage, index, apiKey, model, currentPathBackground);
 }
 
+// Deliberately NOT renderKeyQuestionsHtml(record) — that function embeds live
+// "Generate reading list" buttons wired to generateReadingListForQuestion(),
+// which reads/writes the module-global currentNode/currentPath. The timeline
+// never sets those globals (multiple stages render at once), so those buttons
+// would silently operate on whatever unrelated node was last viewed, or throw
+// if none was. Deep-dive interactions are reached only via "Open full view"
+// below, which jumps into the real single-node pane where that global state
+// is set correctly — this preview renders question/explanation text only,
+// with no interactive per-question elements.
+function renderPathStageQuestionsPreviewHtml(record) {
+  let html = '';
+  for (const [level, label] of QUESTION_LEVELS) {
+    const questions = (record.keyQuestions && record.keyQuestions[level]) || [];
+    if (questions.length === 0) continue;
+    html += `<div class="questions-block"><h4>${label}</h4>`;
+    for (const q of questions) {
+      html += `<div class="question-item">
+        <div class="q">${escHtml(q.question || '')}</div>
+        <div class="why">${escHtml(q.explanation || '')}</div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  return html || '<p class="node-desc">No key questions generated.</p>';
+}
+
 function renderPathStageKeyQuestionsHtml(record, stage) {
-  const counts = QUESTION_LEVELS.map(([lvl]) => (record.keyQuestions && record.keyQuestions[lvl] || []).length);
-  let html = renderKeyQuestionsHtml(record);
+  let html = renderPathStageQuestionsPreviewHtml(record);
   html += `<div class="stage-actions">
     <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (reading lists, research questions, paradigms) →</button>
   </div>`;
