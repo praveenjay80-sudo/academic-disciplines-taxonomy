@@ -644,10 +644,24 @@ function pathStageDomId(index) {
   return 'path-stage-' + index;
 }
 
+// Bumped every time a path build starts (fresh generation OR a cache hit —
+// both run the same Promise.all sweep below). Each in-flight generation
+// captures the value at its own start; if the user submits ANOTHER path
+// before this one's stages finish settling, a late-resolving promise from
+// the superseded build checks its captured value against the current one
+// and bails out before touching currentPathStageRecords/the DOM — without
+// this, a stale record from an old, unrelated path could get written into
+// the new path's same-index card and then get replayed on every future
+// Linear/Graph toggle (the same class of shared-mutable-state bug fixed in
+// ensureStageNodeRecord's dedup, just across path builds instead of within
+// one stage's two generators).
+let currentPathGeneration = 0;
+
 async function renderPathTimeline(stages, target, background) {
   const apiKey = requireApiKey();
   if (!apiKey) return;
   const model = getSelectedModel();
+  const myGeneration = ++currentPathGeneration;
 
   currentPathStageRecords = new Array(stages.length).fill(null);
   currentPathView = 'linear';
@@ -657,7 +671,7 @@ async function renderPathTimeline(stages, target, background) {
     `<div id="pathViewToggle">${renderPathViewToggleHtml()}</div>` +
     `<div id="pathStagesContainer">${buildLinearContainerHtml(stages)}</div>`;
 
-  await Promise.all(stages.map((stage, i) => generateAndRenderStage(stage, i, apiKey, model, background)));
+  await Promise.all(stages.map((stage, i) => generateAndRenderStage(stage, i, apiKey, model, background, myGeneration)));
 }
 
 function renderPathViewToggleHtml() {
@@ -755,21 +769,23 @@ function renderPathStageShell(stage, index, compact) {
   </div>`;
 }
 
-async function generateAndRenderStage(stage, index, apiKey, model, background) {
+async function generateAndRenderStage(stage, index, apiKey, model, background, myGeneration) {
   await Promise.all([
-    generateAndRenderStageQuestions(stage, index, apiKey, model, background),
-    generateAndRenderStageReadingList(stage, index, apiKey, model, background),
+    generateAndRenderStageQuestions(stage, index, apiKey, model, background, myGeneration),
+    generateAndRenderStageReadingList(stage, index, apiKey, model, background, myGeneration),
   ]);
 }
 
-async function generateAndRenderStageQuestions(stage, index, apiKey, model, background) {
+async function generateAndRenderStageQuestions(stage, index, apiKey, model, background, myGeneration) {
   try {
     const record = await generateStageKeyQuestions(stage, apiKey, model, background);
+    if (myGeneration !== currentPathGeneration) return; // a newer path build superseded this one
     currentPathStageRecords[index] = record;
     const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-questions-body').innerHTML = renderPathStageQuestionsPreviewHtml(record);
   } catch (e) {
+    if (myGeneration !== currentPathGeneration) return;
     const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-questions-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
@@ -777,14 +793,16 @@ async function generateAndRenderStageQuestions(stage, index, apiKey, model, back
   }
 }
 
-async function generateAndRenderStageReadingList(stage, index, apiKey, model, background) {
+async function generateAndRenderStageReadingList(stage, index, apiKey, model, background, myGeneration) {
   try {
     const record = await generateStageReadingList(stage, apiKey, model, background);
+    if (myGeneration !== currentPathGeneration) return; // a newer path build superseded this one
     currentPathStageRecords[index] = record;
     const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-reading-body').innerHTML = `<h4 style="color:var(--accent2);font-size:0.9em;margin-bottom:8px">📖 Complete reading list</h4>${renderQuestionReadingListHtml(record.stageReadingList)}`;
   } catch (e) {
+    if (myGeneration !== currentPathGeneration) return;
     const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-reading-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
@@ -872,7 +890,7 @@ function retryPathStageQuestions(index) {
   const stage = currentPathStages[index];
   const el = document.getElementById(pathStageDomId(index));
   if (el) el.querySelector('.stage-questions-body').innerHTML = '⏳ Working out key questions…';
-  generateAndRenderStageQuestions(stage, index, apiKey, model, currentPathBackground);
+  generateAndRenderStageQuestions(stage, index, apiKey, model, currentPathBackground, currentPathGeneration);
 }
 
 function retryPathStageReadingList(index) {
@@ -882,7 +900,7 @@ function retryPathStageReadingList(index) {
   const stage = currentPathStages[index];
   const el = document.getElementById(pathStageDomId(index));
   if (el) el.querySelector('.stage-reading-body').innerHTML = '⏳ Building the complete reading list…';
-  generateAndRenderStageReadingList(stage, index, apiKey, model, currentPathBackground);
+  generateAndRenderStageReadingList(stage, index, apiKey, model, currentPathBackground, currentPathGeneration);
 }
 
 // Deliberately NOT renderKeyQuestionsHtml(record) — that function embeds live
