@@ -820,18 +820,20 @@ function buildWorksContainerHtml() {
     const rows = computeWorkLadderRows(works);
     let html = '<div class="path-graph">';
     rows.forEach((row, rowIndex) => {
-      html += `<div class="path-ladder-rung">Rung ${rowIndex + 1} of ${rows.length}${rowIndex === 0 ? ' — start here' : ''}${rowIndex === rows.length - 1 ? ' — most advanced' : ''}</div>`;
+      const tier = rowIndex + 1;
+      html += `<div class="path-ladder-rung">Tier ${tier} of ${rows.length}${rowIndex === 0 ? ' — read these first' : ' — read after Tier ' + rowIndex + ' is done'}${row.length > 1 ? ' (any order within this tier)' : ''}${rowIndex === rows.length - 1 ? ' · most advanced' : ''}</div>`;
       html += '<div class="path-graph-row">';
-      for (const w of row) {
+      row.forEach((w, posIndex) => {
+        const label = tier + '.' + (posIndex + 1);
         html += `<div class="path-graph-card">
-          <div class="path-stage-kind">${w.landmark ? 'LANDMARK' : 'CROSS-CUTTING'}</div>
+          <div class="path-stage-kind">${label} · ${w.landmark ? 'LANDMARK' : 'CROSS-CUTTING'}</div>
           <div class="stage-name">${escHtml(w.title || '')}</div>
           <div class="stage-desc">${escHtml(w.author || '')}</div>
           ${workLinksHtml(w)}
           <div class="path-works-stages">${(Array.isArray(w.stages) ? w.stages : []).map(s => `<span class="chip">${escHtml(s)}</span>`).join(' ')}</div>
           ${w.why_significant ? `<div class="stage-desc" style="margin-top:6px">${escHtml(w.why_significant)}</div>` : ''}
         </div>`;
-      }
+      });
       html += '</div>';
     });
     html += '</div>';
