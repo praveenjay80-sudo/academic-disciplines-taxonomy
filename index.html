@@ -236,11 +236,14 @@ let dbPromise = null;
 function getDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open('academic_explorer', 1);
+    const req = indexedDB.open('academic_explorer', 2);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains('nodes')) {
         db.createObjectStore('nodes', { keyPath: 'path' });
+      }
+      if (!db.objectStoreNames.contains('paths')) {
+        db.createObjectStore('paths', { keyPath: 'key' });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -276,6 +279,30 @@ async function dbGetAll() {
     const req = tx.objectStore('nodes').getAll();
     req.onsuccess = () => resolve(req.result || []);
     req.onerror = () => resolve([]);
+  });
+}
+
+function pathCacheKey(target, background) {
+  return normalizeForMatch(target) + '::' + normalizeForMatch(background);
+}
+
+async function dbGetPath(key) {
+  const db = await getDb();
+  return new Promise((resolve) => {
+    const tx = db.transaction('paths', 'readonly');
+    const req = tx.objectStore('paths').get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+
+async function dbPutPath(record) {
+  const db = await getDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('paths', 'readwrite');
+    tx.objectStore('paths').put(record);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
   });
 }
 
