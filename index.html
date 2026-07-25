@@ -1850,6 +1850,15 @@ genuinely independent of each other and belong at the same depth. A landmark int
 typically have no dependencies within this set; a highly specialized or synthesizing work may genuinely
 depend on several others.
 
+The single most common mistake here is pairing two works because they're both "classic" or
+"foundational" in a general sense, NOT because one's actual content requires the other's. Before adding
+ANY depends_on edge, ask yourself: does the LATER work's actual subject matter specifically assume
+concepts taught IN the earlier work? If you can't name the specific concept being assumed, the
+dependency is not real — leave it out. For example, Euclid's "Elements" and Rudin's "Principles of
+Mathematical Analysis" are both classic, foundational, rigorous mathematics texts, but Rudin's real
+analysis does NOT require Euclid's geometry — that would be a false dependency from surface-level
+similarity, not genuine content prerequisite, and must not be included.
+
 Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
 
 {
