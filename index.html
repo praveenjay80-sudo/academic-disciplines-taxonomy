@@ -172,6 +172,7 @@
   .path-works-stages .chip { font-size: 0.72em; padding: 3px 9px; }
   .path-ladder-rung { color: var(--accent); font-weight: 700; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--accent); }
   .path-ladder-rung:first-child { margin-top: 0; }
+  .path-tier-note { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); color: var(--purple); font-size: 0.76em; font-style: italic; }
 </style>
 </head>
 <body>
@@ -749,11 +750,20 @@ function collectAllStageWorks() {
   return works;
 }
 
+// In-flight guard: a fast double-click on "Build knowledge ladder" would
+// otherwise fire two concurrent, redundant LLM calls (unlike per-stage
+// generation, this one isn't naturally deduped by an existing record
+// check, since it's a single explicit user action, not something that
+// fires automatically per stage).
+let significantWorksInFlight = false;
+
 async function generateSignificantWorks() {
+  if (significantWorksInFlight) return;
   const apiKey = requireApiKey();
   if (!apiKey) return;
   const model = getSelectedModel();
   const myGeneration = currentPathGeneration;
+  significantWorksInFlight = true;
 
   const loadingEl = document.getElementById('pathStagesContainer');
   if (loadingEl) loadingEl.innerHTML = '<div class="loading">⏳ Finding the works that matter most…</div>';
@@ -763,12 +773,14 @@ async function generateSignificantWorks() {
   try {
     parsed = await callOpenRouter(apiKey, model, buildSignificantWorksPrompt(works), 12000);
   } catch (e) {
+    significantWorksInFlight = false;
     if (myGeneration !== currentPathGeneration) return;
     const errEl = document.getElementById('pathStagesContainer');
     if (errEl) errEl.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
       <div style="margin-top:8px"><button class="btn btn-small" onclick="generateSignificantWorks()">Retry</button></div>`;
     return;
   }
+  significantWorksInFlight = false;
   if (myGeneration !== currentPathGeneration) return;
 
   // Map the model's depends_on (snake_case, matching buildSignificantWorksPrompt's
@@ -811,6 +823,19 @@ function computeWorkLadderRows(works) {
   return sortedLevels.map(lvl => byLevel.get(lvl));
 }
 
+// "Why is this book in this tier" — derived directly from the real
+// dependsOn data already used to compute the tier itself, not a separate
+// LLM-written explanation that could drift from the actual graph. A work
+// with no dependencies is a genuine starting point; a work with
+// dependencies is here because it needs those specific works first.
+function buildTierRationale(w) {
+  const deps = Array.isArray(w.dependsOn) ? w.dependsOn : [];
+  if (deps.length === 0) {
+    return 'Starting point — no prerequisites among the selected works.';
+  }
+  return 'Here because it builds on: ' + deps.join(', ');
+}
+
 function buildWorksContainerHtml() {
   if (currentPathSignificantWorksGenerated) {
     const works = currentPathSignificantWorks || [];
@@ -825,13 +850,15 @@ function buildWorksContainerHtml() {
       html += '<div class="path-graph-row">';
       row.forEach((w, posIndex) => {
         const label = tier + '.' + (posIndex + 1);
+        const kindLabel = w.landmark === true ? 'LANDMARK' : (Array.isArray(w.stages) && w.stages.length > 1 ? 'CROSS-CUTTING' : 'SIGNIFICANT');
         html += `<div class="path-graph-card">
-          <div class="path-stage-kind">${label} · ${w.landmark ? 'LANDMARK' : 'CROSS-CUTTING'}</div>
+          <div class="path-stage-kind">${label} · ${kindLabel}</div>
           <div class="stage-name">${escHtml(w.title || '')}</div>
           <div class="stage-desc">${escHtml(w.author || '')}</div>
           ${workLinksHtml(w)}
           <div class="path-works-stages">${(Array.isArray(w.stages) ? w.stages : []).map(s => `<span class="chip">${escHtml(s)}</span>`).join(' ')}</div>
           ${w.why_significant ? `<div class="stage-desc" style="margin-top:6px">${escHtml(w.why_significant)}</div>` : ''}
+          <div class="path-tier-note">${escHtml(buildTierRationale(w))}</div>
         </div>`;
       });
       html += '</div>';
@@ -845,7 +872,7 @@ function buildWorksContainerHtml() {
   if (!allReady) {
     return `<p class="node-desc">Waiting for all stages' reading lists to finish generating (${readyCount}/${currentPathStageRecords.length} done) — come back to this tab once they're all ready.</p>`;
   }
-  return `<p class="node-desc">Builds one knowledge ladder spanning the whole path — only the works that genuinely matter (landmark texts, or works independently picked for multiple concepts), positioned by how early they belong: their concept's place in the path, refined by whether they're prerequisite-level or current-research-level material within that concept.</p>
+  return `<p class="node-desc">Builds one knowledge ladder spanning the whole path — only the works that genuinely matter (landmark texts, or works independently picked for multiple concepts), positioned by real "builds upon" prerequisite relationships among just that selected set, the same way concepts are sequenced in the Graph view.</p>
     <button class="btn btn-primary" onclick="generateSignificantWorks()">🪜 Build knowledge ladder</button>`;
 }
 
@@ -1814,10 +1841,14 @@ include a work if EITHER:
   be expected to know — even if it was only picked for one concept.
 
 Step 2 — for ONLY the works you selected in Step 1, identify genuine "builds upon" prerequisite
-relationships AMONG THEM (not the full list above, just your selected set). Many of these works are
-independent of each other and don't require one another — do not invent a fake dependency just to create
-an order. A landmark introductory text will typically have no dependencies within this set; a more
-advanced work may genuinely require one or more of the others first.
+relationships AMONG THEM (not the full list above, just your selected set). Think in terms of a real
+multi-step chain wherever the material genuinely has one — do NOT default to a flat two-level split
+("foundational" vs "everything else"). If work C genuinely requires work B, which itself genuinely
+requires work A, say so explicitly (C depends_on B, B depends_on A) rather than collapsing C straight
+onto A. At the same time, do not invent a fake dependency just to create more levels — many works are
+genuinely independent of each other and belong at the same depth. A landmark introductory text will
+typically have no dependencies within this set; a highly specialized or synthesizing work may genuinely
+depend on several others.
 
 Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
 
