@@ -168,6 +168,10 @@
   .path-graph-card .stage-name { display: block; margin: 4px 0 8px; }
   .path-graph-card .stage-details { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
   .path-graph-card .stage-details.open { display: block; }
+  .path-works-stages { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .path-works-stages .chip { font-size: 0.72em; padding: 3px 9px; }
+  .path-ladder-rung { color: var(--accent); font-weight: 700; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--accent); }
+  .path-ladder-rung:first-child { margin-top: 0; }
 </style>
 </head>
 <body>
@@ -483,6 +487,10 @@ async function buildLearningPath(target, background) {
   if (cached) {
     currentPathStages = cached.stages;
     currentPathBackground = background;
+    currentPathTarget = target;
+    currentPathCacheKey = cacheKey;
+    currentPathSignificantWorks = cached.significantWorks || null;
+    currentPathSignificantWorksGenerated = !!cached.significantWorksGenerated;
     renderPathTimeline(cached.stages, target, background);
     return;
   }
@@ -557,6 +565,10 @@ async function buildLearningPath(target, background) {
   await dbPutPath({ key: cacheKey, target, background, stages, generatedAt: Date.now() });
   currentPathStages = stages;
   currentPathBackground = background;
+  currentPathTarget = target;
+  currentPathCacheKey = cacheKey;
+  currentPathSignificantWorks = null;
+  currentPathSignificantWorksGenerated = false;
   renderPathTimeline(stages, target, background);
 }
 
@@ -678,6 +690,7 @@ function renderPathViewToggleHtml() {
   return `<div class="path-view-toggle">
     <button class="btn btn-small ${currentPathView === 'linear' ? 'btn-primary' : ''}" onclick="switchPathView('linear')">Linear</button>
     <button class="btn btn-small ${currentPathView === 'graph' ? 'btn-primary' : ''}" onclick="switchPathView('graph')">Graph</button>
+    <button class="btn btn-small ${currentPathView === 'works' ? 'btn-primary' : ''}" onclick="switchPathView('works')">Works</button>
   </div>`;
 }
 
@@ -714,11 +727,139 @@ function buildGraphContainerHtml(stages) {
   return html;
 }
 
+const READING_LIST_SECTIONS = ['prerequisites', 'foundational', 'intermediate', 'advanced', 'current_research'];
+
+// Flattens every stage's already-generated reading list into one compact
+// list ({title, author, stageName}), the input to generateSignificantWorks().
+// Only stages whose reading list has actually finished are included.
+function collectAllStageWorks() {
+  const works = [];
+  currentPathStages.forEach((stage, i) => {
+    const record = currentPathStageRecords[i];
+    if (!record || !record.stageReadingListGenerated || !record.stageReadingList) return;
+    for (const section of READING_LIST_SECTIONS) {
+      const items = record.stageReadingList[section];
+      if (!Array.isArray(items)) continue;
+      for (const item of items) {
+        if (!item.title) continue;
+        works.push({ title: item.title, author: item.author || '', stageName: stage.name });
+      }
+    }
+  });
+  return works;
+}
+
+async function generateSignificantWorks() {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const myGeneration = currentPathGeneration;
+
+  const loadingEl = document.getElementById('pathStagesContainer');
+  if (loadingEl) loadingEl.innerHTML = '<div class="loading">⏳ Finding the works that matter most…</div>';
+
+  const works = collectAllStageWorks();
+  let parsed;
+  try {
+    parsed = await callOpenRouter(apiKey, model, buildSignificantWorksPrompt(works), 12000);
+  } catch (e) {
+    if (myGeneration !== currentPathGeneration) return;
+    const errEl = document.getElementById('pathStagesContainer');
+    if (errEl) errEl.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
+      <div style="margin-top:8px"><button class="btn btn-small" onclick="generateSignificantWorks()">Retry</button></div>`;
+    return;
+  }
+  if (myGeneration !== currentPathGeneration) return;
+
+  // Map the model's depends_on (snake_case, matching buildSignificantWorksPrompt's
+  // requested shape) to dependsOn (camelCase) — computeWorkLevels()/
+  // computeLevelsFromDependencies() read `dependsOn`, same internal
+  // convention already used for concept stages. Without this mapping every
+  // work silently has no resolvable dependency field and collapses to one
+  // flat level.
+  const rawSignificant = Array.isArray(parsed.significant_works) ? parsed.significant_works : [];
+  currentPathSignificantWorks = rawSignificant.map(w => ({ ...w, dependsOn: Array.isArray(w.depends_on) ? w.depends_on : [] }));
+  currentPathSignificantWorksGenerated = true;
+
+  const cached = (await dbGetPath(currentPathCacheKey).catch(() => undefined)) ||
+    { key: currentPathCacheKey, target: currentPathTarget, background: currentPathBackground, stages: currentPathStages };
+  cached.significantWorks = currentPathSignificantWorks;
+  cached.significantWorksGenerated = true;
+  await dbPutPath(cached);
+
+  if (myGeneration === currentPathGeneration && currentPathView === 'works') {
+    const resultEl = document.getElementById('pathStagesContainer');
+    if (resultEl) resultEl.innerHTML = buildWorksContainerHtml();
+  }
+}
+
+// Groups significant works into rows by computeWorkLevels() — same row =
+// genuinely parallel (no dependency between them), later row = depends on
+// an earlier row. Real "builds upon" data from buildSignificantWorksPrompt's
+// Step 2 (scoped to just this ~tens-of-items significant set, not the full
+// 600+ works), the same depends_on/level-assignment pattern as the concept
+// graph — not a derived approximation.
+function computeWorkLadderRows(works) {
+  const levels = computeWorkLevels(works);
+  const byLevel = new Map();
+  works.forEach((w, i) => {
+    const lvl = levels[i];
+    if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+    byLevel.get(lvl).push(w);
+  });
+  const sortedLevels = Array.from(byLevel.keys()).sort((a, b) => a - b);
+  return sortedLevels.map(lvl => byLevel.get(lvl));
+}
+
+function buildWorksContainerHtml() {
+  if (currentPathSignificantWorksGenerated) {
+    const works = currentPathSignificantWorks || [];
+    if (works.length === 0) {
+      return '<p class="node-desc">No works were flagged as significant enough for a path-wide ladder.</p>';
+    }
+    const rows = computeWorkLadderRows(works);
+    let html = '<div class="path-graph">';
+    rows.forEach((row, rowIndex) => {
+      html += `<div class="path-ladder-rung">Rung ${rowIndex + 1} of ${rows.length}${rowIndex === 0 ? ' — start here' : ''}${rowIndex === rows.length - 1 ? ' — most advanced' : ''}</div>`;
+      html += '<div class="path-graph-row">';
+      for (const w of row) {
+        html += `<div class="path-graph-card">
+          <div class="path-stage-kind">${w.landmark ? 'LANDMARK' : 'CROSS-CUTTING'}</div>
+          <div class="stage-name">${escHtml(w.title || '')}</div>
+          <div class="stage-desc">${escHtml(w.author || '')}</div>
+          ${workLinksHtml(w)}
+          <div class="path-works-stages">${(Array.isArray(w.stages) ? w.stages : []).map(s => `<span class="chip">${escHtml(s)}</span>`).join(' ')}</div>
+          ${w.why_significant ? `<div class="stage-desc" style="margin-top:6px">${escHtml(w.why_significant)}</div>` : ''}
+        </div>`;
+      }
+      html += '</div>';
+    });
+    html += '</div>';
+    return html;
+  }
+
+  const readyCount = currentPathStageRecords.filter(r => r && r.stageReadingListGenerated).length;
+  const allReady = currentPathStageRecords.length > 0 && readyCount === currentPathStageRecords.length;
+  if (!allReady) {
+    return `<p class="node-desc">Waiting for all stages' reading lists to finish generating (${readyCount}/${currentPathStageRecords.length} done) — come back to this tab once they're all ready.</p>`;
+  }
+  return `<p class="node-desc">Builds one knowledge ladder spanning the whole path — only the works that genuinely matter (landmark texts, or works independently picked for multiple concepts), positioned by how early they belong: their concept's place in the path, refined by whether they're prerequisite-level or current-research-level material within that concept.</p>
+    <button class="btn btn-primary" onclick="generateSignificantWorks()">🪜 Build knowledge ladder</button>`;
+}
+
 function switchPathView(view) {
   currentPathView = view;
   document.getElementById('pathViewToggle').innerHTML = renderPathViewToggleHtml();
-  document.getElementById('pathStagesContainer').innerHTML =
-    view === 'linear' ? buildLinearContainerHtml(currentPathStages) : buildGraphContainerHtml(currentPathStages);
+  const container = document.getElementById('pathStagesContainer');
+  if (view === 'linear') {
+    container.innerHTML = buildLinearContainerHtml(currentPathStages);
+  } else if (view === 'graph') {
+    container.innerHTML = buildGraphContainerHtml(currentPathStages);
+  } else {
+    container.innerHTML = buildWorksContainerHtml();
+  }
+
+  if (view !== 'linear' && view !== 'graph') return;
 
   // Re-populate anything already generated instantly — no re-fetch/re-generate.
   // Still-in-flight generations resolve into whichever view is mounted at
@@ -815,7 +956,16 @@ async function generateAndRenderStageReadingList(stage, index, apiKey, model, ba
 // call and there is exactly one path visible at a time.
 let currentPathStages = null;
 let currentPathBackground = '';
-let currentPathView = 'linear'; // 'linear' | 'graph'
+let currentPathTarget = '';
+let currentPathCacheKey = '';
+let currentPathView = 'linear'; // 'linear' | 'graph' | 'works'
+// Significant works (landmark texts, or a real work independently picked
+// for 2+ stages) are found lazily by a dedicated pass over everything
+// already generated, not eagerly — see generateSignificantWorks(). Cached
+// in the same path-level record as `stages` so revisiting a path doesn't
+// re-run this pass either.
+let currentPathSignificantWorks = null;
+let currentPathSignificantWorksGenerated = false;
 // Parallel array to currentPathStages, set once a stage's record is first
 // fetched/created (by whichever of generateAndRenderStageQuestions/
 // generateAndRenderStageReadingList resolves first). Since both share the
@@ -824,32 +974,29 @@ let currentPathView = 'linear'; // 'linear' | 'graph'
 // entry automatically — switching views just re-reads it, no re-fetch.
 let currentPathStageRecords = [];
 
-// Longest-path level assignment from each prerequisite's resolved
-// dependencies (used by the Graph view to group stages into rows — same
-// row = parallel, later row = depends on an earlier row). A cycle guard
-// (the `visiting` set) cuts any back-edge rather than recursing forever;
-// this is a defensive fallback for a malformed/hallucinated dependency
-// loop, not expected in normal model output.
-function computeStageLevels(stages) {
-  const prereqIndices = [];
+// Generic longest-path level assignment from a `dependsOn`-style field
+// referencing other items' names WITHIN THE SAME LIST (case-insensitive;
+// self-references and names that don't match anything in `items` are
+// dropped). Same row/level = parallel; a later level = depends on an
+// earlier one. A cycle guard (the `visiting` set) cuts any back-edge
+// rather than recursing forever — a defensive fallback for a malformed/
+// hallucinated dependency loop, not expected in normal model output.
+// Shared by computeStageLevels() (concepts) and computeWorkLevels() (the
+// knowledge-ladder works) so both graphs use identical, tested logic.
+function computeLevelsFromDependencies(items, getName, getDependsOn) {
   const nameToIndex = new Map();
-  stages.forEach((s, i) => {
-    if (s.kind === 'prerequisite') {
-      prereqIndices.push(i);
-      nameToIndex.set(normalizeForMatch(s.name), i);
-    }
-  });
+  items.forEach((item, i) => nameToIndex.set(normalizeForMatch(getName(item)), i));
 
   const deps = new Map();
-  for (const i of prereqIndices) {
-    const raw = Array.isArray(stages[i].dependsOn) ? stages[i].dependsOn : [];
+  items.forEach((item, i) => {
+    const raw = getDependsOn(item);
     const resolved = [];
-    for (const name of raw) {
+    for (const name of (Array.isArray(raw) ? raw : [])) {
       const depIndex = nameToIndex.get(normalizeForMatch(name));
       if (depIndex !== undefined && depIndex !== i) resolved.push(depIndex);
     }
     deps.set(i, resolved);
-  }
+  });
 
   const memo = new Map();
   function levelOf(i, visiting) {
@@ -865,13 +1012,25 @@ function computeStageLevels(stages) {
     return level;
   }
 
+  return items.map((_, i) => levelOf(i, new Set()));
+}
+
+// Concepts: only 'prerequisite' stages carry real dependsOn data; the
+// target sits one level past the highest prerequisite level, and frontier
+// stages (the target's real tree children) all share one level past the
+// target — both by construction, no dependency data needed for either.
+function computeStageLevels(stages) {
+  const prereqIndices = [];
+  stages.forEach((s, i) => { if (s.kind === 'prerequisite') prereqIndices.push(i); });
+  const prereqStages = prereqIndices.map(i => stages[i]);
+  const prereqLevels = computeLevelsFromDependencies(prereqStages, s => s.name, s => s.dependsOn);
+
   const levels = new Array(stages.length).fill(0);
   let maxPrereqLevel = -1;
-  for (const i of prereqIndices) {
-    const lvl = levelOf(i, new Set());
-    levels[i] = lvl;
-    if (lvl > maxPrereqLevel) maxPrereqLevel = lvl;
-  }
+  prereqIndices.forEach((stageIndex, j) => {
+    levels[stageIndex] = prereqLevels[j];
+    if (prereqLevels[j] > maxPrereqLevel) maxPrereqLevel = prereqLevels[j];
+  });
 
   const targetLevel = maxPrereqLevel + 1;
   const targetIndex = stages.findIndex(s => s.kind === 'target');
@@ -881,6 +1040,13 @@ function computeStageLevels(stages) {
   });
 
   return levels;
+}
+
+// Works: every significant work carries real depends_on data from
+// buildSignificantWorksPrompt's Step 2 — no special-casing needed, unlike
+// concepts' target/frontier structure.
+function computeWorkLevels(works) {
+  return computeLevelsFromDependencies(works, w => w.title, w => w.dependsOn);
 }
 
 function retryPathStageQuestions(index) {
@@ -1611,6 +1777,57 @@ work available to you (prioritizing the citations above when given), not a token
 specificity matters more than length. Real titles/authors/years only; omit an item entirely rather than
 guessing or inventing one to pad a section. Take the "answers" field seriously and in detail. Never
 fabricate a DOI or arXiv ID for "locator" — a made-up one is worse than an empty string.`;
+}
+
+// Each stage's reading list (buildStageReadingListPrompt) is generated
+// independently, with zero awareness of any other stage's list — so the
+// SAME real work can end up picked for multiple stages, possibly phrased
+// slightly differently each time, and no cross-work "builds upon" data
+// exists anywhere yet. This is a separate, deliberately later pass over
+// everything already generated (not a fresh reading-list generation): it
+// (1) filters ~600+ works down to only the ones significant enough for a
+// path-wide ladder (landmark texts, or real duplicates across concepts),
+// and (2), for exactly that smaller self-selected set, asks for genuine
+// "builds upon" dependencies among THEM — the same depends_on pattern
+// buildPrerequisiteChainPrompt uses for concepts, just at work granularity
+// and scoped to a tractable ~100-item set instead of the full 600+.
+function buildSignificantWorksPrompt(worksList) {
+  const itemsBlock = worksList
+    .map((w, i) => `${i}. "${w.title}" — ${w.author || 'unknown author'} (picked for: ${w.stageName})`)
+    .join('\n');
+
+  return `Below is a list of works (books/papers) already independently picked across many different
+concepts in a learning path. Each was chosen separately, with no awareness of what was picked for any
+other concept — so the SAME real work may appear more than once, possibly phrased slightly differently
+each time (edition, subtitle, punctuation, author name format).
+
+${itemsBlock}
+
+Step 1 — identify the SIGNIFICANT works worth surfacing in a single global "knowledge ladder" spanning
+the whole path. Most works above are perfectly good but ordinary entries that do NOT belong here — only
+include a work if EITHER:
+- it's genuinely the SAME real work independently picked for 2+ different concepts above (merge those
+  into one entry listing every concept it was picked for), OR
+- it's a landmark/canonical work in its field — the kind of text a well-read person in that area would
+  be expected to know — even if it was only picked for one concept.
+
+Step 2 — for ONLY the works you selected in Step 1, identify genuine "builds upon" prerequisite
+relationships AMONG THEM (not the full list above, just your selected set). Many of these works are
+independent of each other and don't require one another — do not invent a fake dependency just to create
+an order. A landmark introductory text will typically have no dependencies within this set; a more
+advanced work may genuinely require one or more of the others first.
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "significant_works": [
+    {"title": "canonical title", "author": "canonical author", "stages": ["Exact concept name(s) as given above"], "landmark": true or false, "why_significant": "1 sentence: why this belongs in the global ladder", "depends_on": ["Exact title of another work in THIS SAME significant_works list that must genuinely be read first"]}
+  ]
+}
+
+Every name inside "stages" and "depends_on" must be copied EXACTLY (character-for-character) — "stages"
+from the "picked for" labels above, "depends_on" from another entry's own "title" in this same output
+list (never reference a work outside this list, and never reference itself).`;
 }
 
 function buildResearchQuestionsPrompt(topic, path, grounding) {
