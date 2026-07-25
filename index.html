@@ -565,6 +565,8 @@ async function ensureStageNodeRecord(stage) {
     keyQuestions: null,
     keyQuestionsGenerated: false,
     questionReadingLists: {},
+    stageReadingList: null,
+    stageReadingListGenerated: false,
     researchQuestions: null,
     researchQuestionsGenerated: false,
     researchQuestionLiterature: {},
@@ -586,6 +588,20 @@ async function generateStageKeyQuestions(stage, apiKey, model, background) {
   record.keyQuestions = parsed.key_questions || { beginner: [], intermediate: [], advanced: [] };
   record.keyQuestionsGenerated = true;
   record.questionReadingLists = record.questionReadingLists || {};
+  await dbPut(record);
+  return record;
+}
+
+// One consolidated reading list for the WHOLE stage topic (not per-question)
+// — the timeline's "complete list of works, in reading order" for this
+// stage. Independent of generateStageKeyQuestions so a failure/retry in one
+// never affects the other.
+async function generateStageReadingList(stage, apiKey, model, background) {
+  const record = await ensureStageNodeRecord(stage);
+  if (record.stageReadingListGenerated) return record;
+  const parsed = await callOpenRouter(apiKey, model, buildStageReadingListPrompt(stage.name, stage.path, record.groundingSource, background), 24000);
+  record.stageReadingList = parsed.reading_list || {};
+  record.stageReadingListGenerated = true;
   await dbPut(record);
   return record;
 }
@@ -616,22 +632,44 @@ function renderPathStageShell(stage, index) {
     <div class="path-stage-kind">${escHtml(kindLabel)}${stage.isRealNode ? ' · real classification node' : ''}</div>
     <div class="stage-name">${escHtml(stage.name)}</div>
     ${stage.description ? `<div class="stage-desc">${escHtml(stage.description)}</div>` : ''}
-    <div class="stage-body">⏳ Working out key questions…</div>
+    <div class="stage-questions-body">⏳ Working out key questions…</div>
+    <div class="stage-reading-body" style="margin-top:14px">⏳ Building the complete reading list…</div>
+    <div class="stage-actions">
+      <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (per-question reading lists, research questions, paradigms) →</button>
+    </div>
   </div>`;
 }
 
 async function generateAndRenderStage(stage, index, apiKey, model, background) {
+  await Promise.all([
+    generateAndRenderStageQuestions(stage, index, apiKey, model, background),
+    generateAndRenderStageReadingList(stage, index, apiKey, model, background),
+  ]);
+}
+
+async function generateAndRenderStageQuestions(stage, index, apiKey, model, background) {
   const el = document.getElementById(pathStageDomId(index));
   try {
     const record = await generateStageKeyQuestions(stage, apiKey, model, background);
     if (!el) return;
-    const bodyEl = el.querySelector('.stage-body');
-    bodyEl.innerHTML = renderPathStageKeyQuestionsHtml(record, stage);
+    el.querySelector('.stage-questions-body').innerHTML = renderPathStageQuestionsPreviewHtml(record);
   } catch (e) {
     if (!el) return;
-    const bodyEl = el.querySelector('.stage-body');
-    bodyEl.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
-      <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStage(${index})">Retry</button></div>`;
+    el.querySelector('.stage-questions-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
+      <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStageQuestions(${index})">Retry key questions</button></div>`;
+  }
+}
+
+async function generateAndRenderStageReadingList(stage, index, apiKey, model, background) {
+  const el = document.getElementById(pathStageDomId(index));
+  try {
+    const record = await generateStageReadingList(stage, apiKey, model, background);
+    if (!el) return;
+    el.querySelector('.stage-reading-body').innerHTML = `<h4 style="color:var(--accent2);font-size:0.9em;margin-bottom:8px">📖 Complete reading list</h4>${renderQuestionReadingListHtml(record.stageReadingList)}`;
+  } catch (e) {
+    if (!el) return;
+    el.querySelector('.stage-reading-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
+      <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStageReadingList(${index})">Retry reading list</button></div>`;
   }
 }
 
@@ -641,14 +679,24 @@ async function generateAndRenderStage(stage, index, apiKey, model, background) {
 let currentPathStages = null;
 let currentPathBackground = '';
 
-function retryPathStage(index) {
+function retryPathStageQuestions(index) {
   const apiKey = requireApiKey();
   if (!apiKey) return;
   const model = getSelectedModel();
   const stage = currentPathStages[index];
   const el = document.getElementById(pathStageDomId(index));
-  if (el) el.querySelector('.stage-body').innerHTML = '⏳ Working out key questions…';
-  generateAndRenderStage(stage, index, apiKey, model, currentPathBackground);
+  if (el) el.querySelector('.stage-questions-body').innerHTML = '⏳ Working out key questions…';
+  generateAndRenderStageQuestions(stage, index, apiKey, model, currentPathBackground);
+}
+
+function retryPathStageReadingList(index) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const stage = currentPathStages[index];
+  const el = document.getElementById(pathStageDomId(index));
+  if (el) el.querySelector('.stage-reading-body').innerHTML = '⏳ Building the complete reading list…';
+  generateAndRenderStageReadingList(stage, index, apiKey, model, currentPathBackground);
 }
 
 // Deliberately NOT renderKeyQuestionsHtml(record) — that function embeds live
@@ -675,14 +723,6 @@ function renderPathStageQuestionsPreviewHtml(record) {
     html += '</div>';
   }
   return html || '<p class="node-desc">No key questions generated.</p>';
-}
-
-function renderPathStageKeyQuestionsHtml(record, stage) {
-  let html = renderPathStageQuestionsPreviewHtml(record);
-  html += `<div class="stage-actions">
-    <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (reading lists, research questions, paradigms) →</button>
-  </div>`;
-  return html;
 }
 
 function openPathStageNode(stage) {
@@ -1317,6 +1357,44 @@ rather than guessing or inventing one to pad a section. Take the "answers" field
 detail — it should let someone decide whether to read the work without opening it. Never fabricate a
 DOI or arXiv ID for "locator" — a made-up one is worse than an empty string, since it looks real but
 leads nowhere.`;
+}
+
+// Same shape/conventions as buildQuestionReadingListPrompt, but scoped to
+// the WHOLE topic rather than one specific question -- used by the Learning
+// Path timeline, where each stage shows one consolidated reading list
+// rather than requiring a separate list per key question.
+function buildStageReadingListPrompt(topic, path, grounding, background) {
+  const breadcrumb = path.join(' > ');
+  const hasCitations = grounding && Array.isArray(grounding.citations) && grounding.citations.length > 0;
+  const citationsBlock = hasCitations
+    ? `Real citations found on this topic's Wikipedia page ("Further reading"/"Bibliography"/"References"):\n${grounding.citations.map(c => '- ' + c).join('\n')}\n\nThese are REAL, verified works. Prioritize them; add other well-known, high-confidence real works only to fill a genuine gap.`
+    : `No real citation list was found for this topic on Wikipedia — rely on your own knowledge, and be conservative (fewer, more confident items) rather than inventing specifics you're unsure of.`;
+  const backgroundBlock = (background && background.trim())
+    ? `\nThe learner has told you what they already know: "${background.trim()}" — you may keep the "prerequisites" section lighter if it's substantially covered by this, but still include it.\n`
+    : '';
+
+  return `Build the COMPLETE reading list for "${topic}" (full path: ${breadcrumb}) — every work a learner
+would read, in reading order, from zero prerequisites all the way to current research on this topic.
+
+${citationsBlock}
+${backgroundBlock}
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "reading_list": {
+    "prerequisites": [{"title": "...", "author": "...", "year": "...", "locator": "a DOI or arXiv ID ONLY if you are genuinely confident of the exact value — empty string otherwise, never guess one", "why": "1 sentence — what this gives you before you can even approach this topic", "answers": "2-3 sentences, in detail: the specific question or problem THIS work itself sets out to answer, in plain language"}],
+    "foundational": [ /* same shape — the field's own basics */ ],
+    "intermediate": [ /* same shape */ ],
+    "advanced": [ /* same shape */ ],
+    "current_research": [ /* same shape — recent/seminal work at the frontier of this topic today */ ]
+  }
+}
+
+Be genuinely exhaustive within what's truly relevant to this topic specifically — every real, relevant
+work available to you (prioritizing the citations above when given), not a token handful, but
+specificity matters more than length. Real titles/authors/years only; omit an item entirely rather than
+guessing or inventing one to pad a section. Take the "answers" field seriously and in detail. Never
+fabricate a DOI or arXiv ID for "locator" — a made-up one is worse than an empty string.`;
 }
 
 function buildResearchQuestionsPrompt(topic, path, grounding) {
