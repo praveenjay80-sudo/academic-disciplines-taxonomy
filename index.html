@@ -439,8 +439,114 @@ function renderPathForm() {
 
 function onPathSubmit() {
   const target = document.getElementById('pathTargetInput').value.trim();
+  const background = document.getElementById('pathBackgroundInput').value.trim();
   if (!target) return;
-  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div><div class="loading">⏳ Path generation not implemented yet (Task 4).</div>`;
+  buildLearningPath(target, background);
+}
+
+async function loadAllFieldTreesData() {
+  const data = {};
+  for (const key of Object.keys(FIELD_TREES)) {
+    await loadFieldTree(key);
+    data[key] = FIELD_TREES[key].data;
+  }
+  return data;
+}
+
+function renderPathLoading(msg) {
+  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div><div class="loading">⏳ ${escHtml(msg)}</div>`;
+}
+
+function renderPathError(msg, target, background) {
+  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div>
+    <div class="error">❌ ${escHtml(msg)}</div>
+    <div style="margin-top:12px"><button class="btn" onclick="buildLearningPath(${escAttr(JSON.stringify(target))}, ${escAttr(JSON.stringify(background))})">Retry</button></div>`;
+}
+
+async function buildLearningPath(target, background) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+
+  renderPathLoading('Checking cache…');
+  const cacheKey = pathCacheKey(target, background);
+  const cached = await dbGetPath(cacheKey);
+  if (cached) {
+    renderPathTimeline(cached.stages, target, background);
+    return;
+  }
+
+  renderPathLoading('Locating "' + target + '" in the real classification trees…');
+  const fieldTreesData = await loadAllFieldTreesData();
+  const targetMatch = findNodeInFieldTrees(fieldTreesData, target);
+
+  let targetGrounding = null;
+  try { targetGrounding = await fetchWikipediaGrounding(target); } catch (e) { /* optional */ }
+
+  renderPathLoading('Working out the prerequisite chain for "' + target + '"…');
+  let prereqParsed;
+  try {
+    prereqParsed = await callOpenRouter(apiKey, model, buildPrerequisiteChainPrompt(target, targetGrounding, background), 6000);
+  } catch (e) {
+    renderPathError('Prerequisite chain failed: ' + e.message, target, background);
+    return;
+  }
+  const prerequisites = Array.isArray(prereqParsed.prerequisites) ? prereqParsed.prerequisites : [];
+
+  // NOTE: findNodeInFieldTrees()'s returned `path` does NOT include the
+  // field label (e.g. "Physics") — it matches renderFieldTreeNode()'s path
+  // convention. selectFieldTreeNode() (existing, unchanged) builds its own
+  // node-record cache key as pathKey([fieldLabel, ...path]) — WITH the
+  // label. Every real-node stage below prepends FIELD_TREES[...].label so
+  // ensureStageNodeRecord()'s pathKey(stage.path) lands on the exact same
+  // cache key selectFieldTreeNode() would use for that node, and so a
+  // stage generated here is the same cached record you'd get browsing to
+  // it directly via the sidebar tree (per spec Architecture point 4).
+  const stages = [];
+  for (const p of prerequisites) {
+    const match = findNodeInFieldTrees(fieldTreesData, p.name);
+    stages.push({
+      name: p.name,
+      description: p.description || '',
+      kind: 'prerequisite',
+      isRealNode: !!match,
+      fieldKey: match ? match.fieldKey : null,
+      path: match ? [FIELD_TREES[match.fieldKey].label, ...match.path] : [p.name],
+    });
+  }
+
+  stages.push({
+    name: target,
+    description: '',
+    kind: 'target',
+    isRealNode: !!targetMatch,
+    fieldKey: targetMatch ? targetMatch.fieldKey : null,
+    path: targetMatch ? [FIELD_TREES[targetMatch.fieldKey].label, ...targetMatch.path] : [target],
+  });
+
+  if (targetMatch) {
+    const children = targetMatch.node.c || [];
+    const targetFullPath = [FIELD_TREES[targetMatch.fieldKey].label, ...targetMatch.path];
+    for (const c of children) {
+      stages.push({
+        name: c.n,
+        description: '',
+        kind: 'frontier',
+        isRealNode: true,
+        fieldKey: targetMatch.fieldKey,
+        path: [...targetFullPath, c.n],
+      });
+    }
+  }
+
+  await dbPutPath({ key: cacheKey, target, background, stages, generatedAt: Date.now() });
+  renderPathTimeline(stages, target, background);
+}
+
+function renderPathTimeline(stages, target, background) {
+  // Stub — replaced with the real timeline renderer in Task 5.
+  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div>
+    <p class="node-desc">Resolved ${stages.length} stages for "${escHtml(target)}" (rendering lands in Task 5). Stage order: ${stages.map(s => escHtml(s.name) + ' [' + s.kind + (s.isRealNode ? ', real' : ', llm') + ']').join(' → ')}</p>`;
 }
 
 async function loadFieldTree(key) {
