@@ -10,6 +10,7 @@
     --bg: #0d1117; --surface: #161b22; --border: #30363d;
     --text: #c9d1d9; --muted: #8b949e; --accent: #58a6ff;
     --accent2: #e85d04; --green: #2ea043; --yellow: #e3b341; --purple: #bc8cff;
+    --path-glow: #ffd60a; --path-glow-dim: rgba(255, 214, 10, 0.55);
   }
   body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -163,10 +164,15 @@
   .path-graph { max-width: 100%; overflow-x: auto; margin-top: 8px; position: relative; }
   .path-graph-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
   .path-graph-row, .path-ladder-rung { position: relative; z-index: 1; }
-  .work-dependency-line { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; transition: opacity 0.12s; }
+  .work-dependency-line { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; transition: opacity 0.12s, stroke 0.12s, stroke-width 0.12s; }
   .work-dependency-line.highlighted { opacity: 0.85; }
-  .work-arrowhead-fill { fill: var(--accent); }
-  .path-graph-card.work-highlighted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  /* The full clicked/hovered path (collectFullPath — all transitive
+     ancestors+descendants) gets a distinct, brighter/thicker treatment on
+     top of .highlighted so it visually "pops" versus an ordinary direct-edge
+     hover elsewhere in the same graph. */
+  .work-dependency-line.path-highlighted { stroke: var(--path-glow); stroke-width: 3; opacity: 1; filter: drop-shadow(0 0 4px var(--path-glow)); }
+  .path-graph-card.work-highlighted { border-color: var(--path-glow); box-shadow: 0 0 10px 1px var(--path-glow-dim); }
+  .path-graph-card.work-path-origin { border-color: var(--path-glow); border-width: 2px; box-shadow: 0 0 18px 3px var(--path-glow-dim); }
   .work-graph-card { cursor: pointer; }
   .path-graph-row { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px dashed var(--border); flex-wrap: wrap; }
   .path-graph-row:last-child { border-bottom: none; }
@@ -179,6 +185,8 @@
   .path-works-stages .chip { font-size: 0.72em; padding: 3px 9px; }
   .path-ladder-rung { color: var(--accent); font-weight: 700; font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; margin: 18px 0 8px; padding-bottom: 4px; border-bottom: 2px solid var(--accent); }
   .path-ladder-rung:first-child { margin-top: 0; }
+  .path-ladder-rung-detail { color: var(--muted); font-size: 0.82em; margin: -2px 0 12px; line-height: 1.5; }
+  .path-ladder-rung-detail div { margin-top: 2px; }
   .path-tier-note { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); color: var(--purple); font-size: 0.76em; font-style: italic; }
 </style>
 </head>
@@ -499,6 +507,7 @@ async function buildLearningPath(target, background) {
     currentPathCacheKey = cacheKey;
     currentPathSignificantWorks = cached.significantWorks || null;
     currentPathSignificantWorksGenerated = !!cached.significantWorksGenerated;
+    currentPathTierLabels = cached.tierLabels || null;
     renderPathTimeline(cached.stages, target, background);
     return;
   }
@@ -577,6 +586,7 @@ async function buildLearningPath(target, background) {
   currentPathCacheKey = cacheKey;
   currentPathSignificantWorks = null;
   currentPathSignificantWorksGenerated = false;
+  currentPathTierLabels = null;
   renderPathTimeline(stages, target, background);
 }
 
@@ -778,7 +788,7 @@ async function generateSignificantWorks() {
   const works = collectAllStageWorks();
   let parsed;
   try {
-    parsed = await callOpenRouter(apiKey, model, buildSignificantWorksPrompt(works), 12000);
+    parsed = await callOpenRouter(apiKey, model, buildSignificantWorksPrompt(works, currentPathTarget), 12000);
   } catch (e) {
     significantWorksInFlight = false;
     if (myGeneration !== currentPathGeneration) return;
@@ -800,10 +810,16 @@ async function generateSignificantWorks() {
   currentPathSignificantWorks = rawSignificant.map(w => ({ ...w, dependsOn: Array.isArray(w.depends_on) ? w.depends_on : [] }));
   currentPathSignificantWorksGenerated = true;
 
+  const namingEl = document.getElementById('pathStagesContainer');
+  if (namingEl) namingEl.innerHTML = '<div class="loading">⏳ Naming each tier…</div>';
+  currentPathTierLabels = await generateTierLabelsFor(currentPathSignificantWorks, apiKey, model);
+  if (myGeneration !== currentPathGeneration) return;
+
   const cached = (await dbGetPath(currentPathCacheKey).catch(() => undefined)) ||
     { key: currentPathCacheKey, target: currentPathTarget, background: currentPathBackground, stages: currentPathStages };
   cached.significantWorks = currentPathSignificantWorks;
   cached.significantWorksGenerated = true;
+  cached.tierLabels = currentPathTierLabels;
   await dbPutPath(cached);
 
   if (myGeneration === currentPathGeneration && currentPathView === 'works') {
@@ -811,6 +827,28 @@ async function generateSignificantWorks() {
     if (resultEl) resultEl.innerHTML = buildWorksContainerHtml();
     drawWorkDependencyLines();
     ensureWorkDependencyLinesRedrawOnResize();
+  }
+}
+
+// Tier boundaries only exist once computeWorkLadderRows() has grouped the
+// significant works, so naming/describing each tier can't be folded into
+// buildSignificantWorksPrompt's own call — this fires as a second, separate
+// pass right after. Deliberately non-fatal: on any failure this returns
+// null and buildWorksContainerHtml() falls back to a generic "Tier N of M"
+// header, rather than losing the whole knowledge-ladder feature over a
+// secondary enhancement. A count mismatch (model returned the wrong number
+// of entries) is treated the same way — silently falling back — since an
+// off-by-one would otherwise attach the wrong name/objective to a tier.
+async function generateTierLabelsFor(works, apiKey, model) {
+  const rows = computeWorkLadderRows(works);
+  if (rows.length === 0) return null;
+  try {
+    const parsed = await callOpenRouter(apiKey, model, buildTierLabelsPrompt(rows), 4000);
+    const tiers = Array.isArray(parsed.tiers) ? parsed.tiers : [];
+    if (tiers.length !== rows.length) return null;
+    return tiers;
+  } catch (e) {
+    return null;
   }
 }
 
@@ -857,7 +895,11 @@ function drawWorkDependencyLines() {
   // .path-graph has overflow-x:auto for wide tiers.
   svg.setAttribute('width', container.scrollWidth);
   svg.setAttribute('height', container.scrollHeight);
-  svg.innerHTML = '<defs><marker id="workArrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" class="work-arrowhead-fill"></path></marker></defs>';
+  // fill="context-stroke" (Chrome 90+) makes the arrowhead automatically
+  // match whichever line color/state is currently applied to the edge that
+  // references this marker — no separate per-edge marker needed to make the
+  // arrowhead itself turn --path-glow gold when that edge is path-highlighted.
+  svg.innerHTML = '<defs><marker id="workArrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="context-stroke"></path></marker></defs>';
 
   works.forEach((w, i) => {
     const targetEl = document.getElementById('work-card-' + i);
@@ -909,26 +951,71 @@ function setupWorkGraphHighlighting(container) {
 
   let pinnedIndex = null;
 
+  // Full end-to-end path: every work the clicked/hovered one ultimately
+  // builds on (all transitive ancestors, walking dependsOn backward) PLUS
+  // every work that ultimately builds on it (all transitive descendants,
+  // walking the reverse edges forward) — not just its direct neighbors.
+  // deps/reverseDeps use the SAME resolveDependencyIndices() output that
+  // drew the lines and computed the tiers, so "the whole path" here can
+  // never disagree with what the graph actually contains.
+  function collectFullPath(startIndex, deps) {
+    const reverseDeps = new Map();
+    deps.forEach((depList, i) => {
+      for (const d of depList) {
+        if (!reverseDeps.has(d)) reverseDeps.set(d, []);
+        reverseDeps.get(d).push(i);
+      }
+    });
+
+    const included = new Set([startIndex]);
+    const backward = [...(deps.get(startIndex) || [])];
+    while (backward.length) {
+      const i = backward.pop();
+      if (included.has(i)) continue;
+      included.add(i);
+      backward.push(...(deps.get(i) || []));
+    }
+    const forward = [...(reverseDeps.get(startIndex) || [])];
+    while (forward.length) {
+      const i = forward.pop();
+      if (included.has(i)) continue;
+      included.add(i);
+      forward.push(...(reverseDeps.get(i) || []));
+    }
+    return included;
+  }
+
   function applyHighlight(index) {
     const svg = document.getElementById('workDependencySvg');
     if (!svg) return;
+    const works = currentPathSignificantWorks || [];
+    const deps = resolveDependencyIndices(works, workDependencyKey, w => w.dependsOn);
+    const startIndex = parseInt(index, 10);
+    const pathSet = collectFullPath(startIndex, deps);
+
     svg.querySelectorAll('.work-dependency-line').forEach(path => {
-      const related = path.dataset.source === index || path.dataset.target === index;
-      path.classList.toggle('highlighted', related);
+      const source = parseInt(path.dataset.source, 10);
+      const target = parseInt(path.dataset.target, 10);
+      // An edge is part of "the whole path" only if BOTH ends are in the
+      // clicked work's ancestor/descendant set — an edge elsewhere in the
+      // graph that happens to touch neither end stays hidden even if it's
+      // technically reachable some other way.
+      const onPath = pathSet.has(source) && pathSet.has(target);
+      path.classList.toggle('highlighted', onPath);
+      path.classList.toggle('path-highlighted', onPath);
     });
     container.querySelectorAll('.path-graph-card').forEach(card => {
-      const cardIndex = card.id.replace('work-card-', '');
-      const related = cardIndex === index || svg.querySelector(
-        `.work-dependency-line.highlighted[data-source="${cardIndex}"], .work-dependency-line.highlighted[data-target="${cardIndex}"]`
-      );
-      card.classList.toggle('work-highlighted', !!related);
+      const cardIndex = parseInt(card.id.replace('work-card-', ''), 10);
+      const onPath = pathSet.has(cardIndex);
+      card.classList.toggle('work-highlighted', onPath);
+      card.classList.toggle('work-path-origin', cardIndex === startIndex);
     });
   }
 
   function clearHighlight() {
     const svg = document.getElementById('workDependencySvg');
-    if (svg) svg.querySelectorAll('.work-dependency-line.highlighted').forEach(p => p.classList.remove('highlighted'));
-    container.querySelectorAll('.path-graph-card.work-highlighted').forEach(c => c.classList.remove('work-highlighted'));
+    if (svg) svg.querySelectorAll('.work-dependency-line.highlighted, .work-dependency-line.path-highlighted').forEach(p => p.classList.remove('highlighted', 'path-highlighted'));
+    container.querySelectorAll('.path-graph-card.work-highlighted, .path-graph-card.work-path-origin').forEach(c => c.classList.remove('work-highlighted', 'work-path-origin'));
   }
 
   container.addEventListener('mouseover', (e) => {
@@ -999,9 +1086,24 @@ function buildWorksContainerHtml() {
     // .path-graph's CSS position:relative — id'd so it can be located and
     // redrawn without rebuilding the whole card layout.
     let html = '<div class="path-graph"><svg id="workDependencySvg" class="path-graph-svg"></svg>';
+    // currentPathTierLabels comes from a second LLM pass (generateTierLabelsFor)
+    // fired right after the works themselves — only trusted here when its
+    // length matches rows.length exactly (see generateTierLabelsFor's own
+    // count check), so an index mismatch can never mislabel a tier. Falls
+    // back to the original generic "Tier N of M" header otherwise.
+    const tierLabels = Array.isArray(currentPathTierLabels) && currentPathTierLabels.length === rows.length ? currentPathTierLabels : null;
     rows.forEach((row, rowIndex) => {
       const tier = rowIndex + 1;
-      html += `<div class="path-ladder-rung">Tier ${tier} of ${rows.length}${rowIndex === 0 ? ' — read these first' : ' — read after Tier ' + rowIndex + ' is done'}${row.length > 1 ? ' (any order within this tier)' : ''}${rowIndex === rows.length - 1 ? ' · most advanced' : ''}</div>`;
+      const label = tierLabels ? tierLabels[rowIndex] : null;
+      const positional = `${rowIndex === 0 ? ' — read these first' : ' — read after Tier ' + rowIndex + ' is done'}${row.length > 1 ? ' (any order within this tier)' : ''}${rowIndex === rows.length - 1 ? ' · most advanced' : ''}`;
+      const title = label && label.name ? `Tier ${tier} — ${escHtml(label.name)}` : `Tier ${tier} of ${rows.length}`;
+      html += `<div class="path-ladder-rung">${title}${positional}</div>`;
+      if (label && (label.objective || label.why_it_matters)) {
+        html += `<div class="path-ladder-rung-detail">
+          ${label.objective ? `<div>🎯 ${escHtml(label.objective)}</div>` : ''}
+          ${label.why_it_matters ? `<div>⭐ Why this tier matters: ${escHtml(label.why_it_matters)}</div>` : ''}
+        </div>`;
+      }
       html += '<div class="path-graph-row">';
       row.forEach((w, posIndex) => {
         const label = tier + '.' + (posIndex + 1);
@@ -1155,6 +1257,15 @@ let currentPathView = 'linear'; // 'linear' | 'graph' | 'works'
 // re-run this pass either.
 let currentPathSignificantWorks = null;
 let currentPathSignificantWorksGenerated = false;
+// Parallel array to computeWorkLadderRows(currentPathSignificantWorks) —
+// currentPathTierLabels[i] = {name, objective, why_it_matters} for row i.
+// Generated by a second, separate LLM call (buildTierLabelsPrompt) fired
+// right after the works themselves, since tier boundaries only exist once
+// computeWorkLadderRows() has run — the model can't know them while
+// picking individual works. null until generated or if that call failed;
+// buildWorksContainerHtml() falls back to a generic "Tier N of M" label
+// per row when this is null or short.
+let currentPathTierLabels = null;
 // Parallel array to currentPathStages, set once a stage's record is first
 // fetched/created (by whichever of generateAndRenderStageQuestions/
 // generateAndRenderStageReadingList resolves first). Since both share the
@@ -1999,27 +2110,40 @@ fabricate a DOI or arXiv ID for "locator" — a made-up one is worse than an emp
 // "builds upon" dependencies among THEM — the same depends_on pattern
 // buildPrerequisiteChainPrompt uses for concepts, just at work granularity
 // and scoped to a tractable ~100-item set instead of the full 600+.
-function buildSignificantWorksPrompt(worksList) {
+function buildSignificantWorksPrompt(worksList, targetTopic) {
   const itemsBlock = worksList
     .map((w, i) => `${i}. "${w.title}" — ${w.author || 'unknown author'} (picked for: ${w.stageName})`)
     .join('\n');
 
   return `Below is a list of works (books/papers) already independently picked across many different
-concepts in a learning path. Each was chosen separately, with no awareness of what was picked for any
-other concept — so the SAME real work may appear more than once, possibly phrased slightly differently
-each time (edition, subtitle, punctuation, author name format).
+concepts in a learning path whose actual target subject is "${targetTopic}". Each work was chosen
+separately, by a generator scoped to just its own narrow concept in isolation, with no awareness of the
+overall path's target subject or of what was picked for any other concept — so the SAME real work may
+appear more than once, possibly phrased slightly differently each time (edition, subtitle, punctuation,
+author name format), and a work can legitimately be a fine answer for its own narrow concept while still
+being the wrong thing to surface as significant to someone learning "${targetTopic}" specifically.
 
 ${itemsBlock}
 
 Step 1 — identify the SIGNIFICANT works worth surfacing in a single global "knowledge ladder" spanning
-the whole path — a ladder people actually READ from, in order, to learn and then do research in this
-field. Most works above are perfectly good but ordinary entries that do NOT belong here — only include a
-work if EITHER:
-- it's genuinely the SAME real work independently picked for 2+ different concepts above (merge those
-  into one entry listing every concept it was picked for), OR
-- it's a landmark/canonical PEDAGOGICAL textbook, or an influential research MONOGRAPH/paper — the kind
-  of text someone is actually assigned, or actually reads to learn or work in the field today — even if
-  it was only picked for one concept.
+the whole path — a ladder people actually READ from, in order, to learn and then do research in
+"${targetTopic}" specifically. Most works above are perfectly good but ordinary entries that do NOT
+belong here — only include a work if it passes BOTH of these:
+
+(a) EITHER it's genuinely the SAME real work independently picked for 2+ different concepts above (merge
+those into one entry listing every concept it was picked for), OR it's a landmark/canonical PEDAGOGICAL
+textbook, or an influential research MONOGRAPH/paper — the kind of text someone is actually assigned, or
+actually reads to learn or work in the field today — even if it was only picked for one concept.
+
+(b) AND it's genuinely relevant to actually learning or doing research in "${targetTopic}" — not just
+relevant to whichever narrow concept it happened to be picked for. A prerequisite math/foundations concept
+(e.g. "Linear Algebra", "Vectors") existing IN a "${targetTopic}" path does not make every book that
+happens to teach or use that math topic relevant to "${targetTopic}" — a textbook from a genuinely
+different field (e.g. a machine-learning or deep-learning textbook showing up because it has a linear
+algebra chapter, or a biology textbook showing up because it mentions statistics) must be EXCLUDED even
+if it satisfies (a), because it is not something a "${targetTopic}" learner is actually being pointed
+toward reading. Being cross-cutting or landmark within some OTHER field is not the same as being relevant
+to THIS field.
 
 For the landmark criterion specifically: EXCLUDE historical curiosities — original historical source
 texts (e.g. Euclid's actual "Elements", Newton's original "Principia"/"Method of Fluxions", Archimedes'
@@ -2072,6 +2196,45 @@ character from that same entry's own "title" and "author" fields elsewhere in yo
 any prerequisite work you pulled in per the rule above that wasn't independently selected in Step 1.
 Never reference a work that isn't a real work from the numbered list at the top of this prompt, and
 never reference a work's own title+author as its own dependency.`;
+}
+
+function buildTierLabelsPrompt(rows) {
+  const tiersBlock = rows
+    .map((row, i) => {
+      const items = row
+        .map(w => `- "${w.title}" — ${w.author || 'unknown author'}${w.why_significant ? ' (' + w.why_significant + ')' : ''}`)
+        .join('\n');
+      return `Tier ${i + 1}:\n${items}`;
+    })
+    .join('\n\n');
+
+  return `Below is a "knowledge ladder" of works for a learning path, already grouped into ${rows.length} tier(s)
+in real reading order based on genuine "builds upon" prerequisite relationships: Tier 1 must be read
+first, Tier ${rows.length} is the most advanced. Works within the same tier have no dependency on each
+other (parallel reading); every tier depends on works in earlier tiers.
+
+${tiersBlock}
+
+For EACH tier above, in order, write:
+- "name": a short (3-6 word) descriptive label for what this tier actually covers, in real subject-matter
+  terms — NOT a generic label like "Tier 1" or "Beginner". E.g. "Multivariable Calculus & Linear Algebra",
+  "Quantum Mechanics Foundations", "Advanced Quantum Field Theory".
+- "objective": one sentence stating what a learner should be able to DO or understand once they've
+  actually finished the works in this tier.
+- "why_it_matters": one sentence on why THIS tier specifically matters in the overall path — what it
+  unlocks, or what would be impossible to genuinely understand in later tiers without it.
+
+Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
+
+{
+  "tiers": [
+    {"name": "...", "objective": "...", "why_it_matters": "..."}
+  ]
+}
+
+Return EXACTLY ${rows.length} entries in "tiers", in the same order as the tiers listed above (the first
+entry describes Tier 1, and so on) — the caller matches entries to tiers purely by position, so the count
+and order must match exactly.`;
 }
 
 function buildResearchQuestionsPrompt(topic, path, grounding) {
