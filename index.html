@@ -894,11 +894,19 @@ function drawWorkDependencyLines() {
 // shown for the work currently hovered or clicked — hovering shows them
 // live; clicking "pins" a work so its lines stay visible without holding
 // the mouse there (also the only way to see them on touch devices).
-// Re-attached on every drawWorkDependencyLines() call, but .path-graph is
-// a fresh element each render (buildWorksContainerHtml() output replaces
-// it wholesale), so old listeners are garbage-collected with it, not
-// accumulated.
+// drawWorkDependencyLines() calls this on every redraw. For the two
+// full-rebuild render paths (generateSignificantWorks, switchPathView)
+// .path-graph is a fresh element each time, so that's harmless — but the
+// window-resize redraw calls drawWorkDependencyLines() directly on the
+// SAME container without rebuilding it, so without a guard this would
+// attach a second, independent set of listeners (each with its own
+// pinnedIndex closure) on every resize, fighting the first set. The
+// dataset flag makes this idempotent per DOM node regardless of how many
+// times it's called on the same container.
 function setupWorkGraphHighlighting(container) {
+  if (container.dataset.highlightBound === 'true') return;
+  container.dataset.highlightBound = 'true';
+
   let pinnedIndex = null;
 
   function applyHighlight(index) {
