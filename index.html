@@ -159,6 +159,15 @@
   .path-stage .stage-desc { color: var(--muted); font-size: 0.82em; margin-top: 2px; max-width: 640px; }
   .path-stage .stage-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   .path-stage-kind { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.04em; }
+  .path-view-toggle { display: flex; gap: 6px; margin: 12px 0; }
+  .path-graph { max-width: 100%; overflow-x: auto; margin-top: 8px; }
+  .path-graph-row { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px dashed var(--border); flex-wrap: wrap; }
+  .path-graph-row:last-child { border-bottom: none; }
+  .path-graph-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 220px; max-width: 260px; }
+  .path-graph-card.target { border-color: var(--accent); border-width: 2px; }
+  .path-graph-card .stage-name { display: block; margin: 4px 0 8px; }
+  .path-graph-card .stage-details { display: none; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+  .path-graph-card .stage-details.open { display: block; }
 </style>
 </head>
 <body>
@@ -514,6 +523,10 @@ async function buildLearningPath(target, background) {
       isRealNode: !!match,
       fieldKey: match ? match.fieldKey : null,
       path: match ? [FIELD_TREES[match.fieldKey].label, ...match.path] : [p.name],
+      // Raw names as the model returned them; computeStageLevels() resolves
+      // these against other prerequisites' names (case-insensitive, self-refs
+      // and unmatched names dropped) when building the Graph view's rows.
+      dependsOn: Array.isArray(p.depends_on) ? p.depends_on : [],
     });
   }
 
@@ -636,28 +649,109 @@ async function renderPathTimeline(stages, target, background) {
   if (!apiKey) return;
   const model = getSelectedModel();
 
-  let html = `<div class="node-header"><h2>🧭 Learning Path: ${escHtml(target)}</h2></div><div class="path-timeline">`;
-  stages.forEach((stage, i) => {
-    html += renderPathStageShell(stage, i);
-  });
-  html += '</div>';
-  document.getElementById('content').innerHTML = html;
+  currentPathStageRecords = new Array(stages.length).fill(null);
+  currentPathView = 'linear';
+
+  document.getElementById('content').innerHTML =
+    `<div class="node-header"><h2>🧭 Learning Path: ${escHtml(target)}</h2></div>` +
+    `<div id="pathViewToggle">${renderPathViewToggleHtml()}</div>` +
+    `<div id="pathStagesContainer">${buildLinearContainerHtml(stages)}</div>`;
 
   await Promise.all(stages.map((stage, i) => generateAndRenderStage(stage, i, apiKey, model, background)));
 }
 
-function renderPathStageShell(stage, index) {
+function renderPathViewToggleHtml() {
+  return `<div class="path-view-toggle">
+    <button class="btn btn-small ${currentPathView === 'linear' ? 'btn-primary' : ''}" onclick="switchPathView('linear')">Linear</button>
+    <button class="btn btn-small ${currentPathView === 'graph' ? 'btn-primary' : ''}" onclick="switchPathView('graph')">Graph</button>
+  </div>`;
+}
+
+function buildLinearContainerHtml(stages) {
+  let html = '<div class="path-timeline">';
+  stages.forEach((stage, i) => { html += renderPathStageShell(stage, i, false); });
+  html += '</div>';
+  return html;
+}
+
+// Groups stages into rows by computeStageLevels() — same row = parallel,
+// each row depends on (a) row above it. Same per-stage card markup/ids as
+// the linear view (renderPathStageShell(..., true) just wraps it compactly
+// with a collapsed details panel instead of always-expanded), so switching
+// views never needs to re-fetch or re-generate anything.
+function buildGraphContainerHtml(stages) {
+  const levels = computeStageLevels(stages);
+  const byLevel = new Map();
+  stages.forEach((stage, i) => {
+    const lvl = levels[i];
+    if (!byLevel.has(lvl)) byLevel.set(lvl, []);
+    byLevel.get(lvl).push(i);
+  });
+  const sortedLevels = Array.from(byLevel.keys()).sort((a, b) => a - b);
+  let html = '<div class="path-graph">';
+  for (const lvl of sortedLevels) {
+    html += '<div class="path-graph-row">';
+    for (const i of byLevel.get(lvl)) {
+      html += renderPathStageShell(stages[i], i, true);
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+function switchPathView(view) {
+  currentPathView = view;
+  document.getElementById('pathViewToggle').innerHTML = renderPathViewToggleHtml();
+  document.getElementById('pathStagesContainer').innerHTML =
+    view === 'linear' ? buildLinearContainerHtml(currentPathStages) : buildGraphContainerHtml(currentPathStages);
+
+  // Re-populate anything already generated instantly — no re-fetch/re-generate.
+  // Still-in-flight generations resolve into whichever view is mounted at
+  // that time via their own document.getElementById(pathStageDomId(...)) call.
+  currentPathStageRecords.forEach((record, i) => {
+    if (!record) return;
+    const el = document.getElementById(pathStageDomId(i));
+    if (!el) return;
+    if (record.keyQuestionsGenerated) {
+      el.querySelector('.stage-questions-body').innerHTML = renderPathStageQuestionsPreviewHtml(record);
+    }
+    if (record.stageReadingListGenerated) {
+      el.querySelector('.stage-reading-body').innerHTML = `<h4 style="color:var(--accent2);font-size:0.9em;margin-bottom:8px">📖 Complete reading list</h4>${renderQuestionReadingListHtml(record.stageReadingList)}`;
+    }
+  });
+}
+
+function togglePathGraphCard(btn) {
+  const details = btn.nextElementSibling;
+  const open = details.classList.toggle('open');
+  btn.textContent = open ? '▾ Hide details' : '▸ Details';
+}
+
+function renderPathStageShell(stage, index, compact) {
   const kindLabel = stage.kind === 'target' ? 'TARGET' : (stage.kind === 'prerequisite' ? 'PREREQUISITE' : 'FRONTIER / SPECIALIZATION');
+  const body = `
+    <div class="stage-questions-body">⏳ Working out key questions…</div>
+    <div class="stage-reading-body" style="margin-top:14px">⏳ Building the complete reading list…</div>
+    <div class="stage-actions">
+      <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (per-question reading lists, research questions, paradigms) →</button>
+    </div>`;
+
+  if (compact) {
+    return `<div class="path-stage path-graph-card ${stage.kind === 'target' ? 'target' : ''}" id="${pathStageDomId(index)}">
+      <div class="path-stage-kind">${escHtml(kindLabel)}${stage.isRealNode ? ' · real' : ''}</div>
+      <div class="stage-name">${escHtml(stage.name)}</div>
+      <button class="btn btn-small" onclick="togglePathGraphCard(this)">▸ Details</button>
+      <div class="stage-details">${body}</div>
+    </div>`;
+  }
+
   return `<div class="path-stage ${stage.kind === 'target' ? 'target' : ''}" id="${pathStageDomId(index)}">
     <div class="marker"></div>
     <div class="path-stage-kind">${escHtml(kindLabel)}${stage.isRealNode ? ' · real classification node' : ''}</div>
     <div class="stage-name">${escHtml(stage.name)}</div>
     ${stage.description ? `<div class="stage-desc">${escHtml(stage.description)}</div>` : ''}
-    <div class="stage-questions-body">⏳ Working out key questions…</div>
-    <div class="stage-reading-body" style="margin-top:14px">⏳ Building the complete reading list…</div>
-    <div class="stage-actions">
-      <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (per-question reading lists, research questions, paradigms) →</button>
-    </div>
+    ${body}
   </div>`;
 }
 
@@ -669,12 +763,14 @@ async function generateAndRenderStage(stage, index, apiKey, model, background) {
 }
 
 async function generateAndRenderStageQuestions(stage, index, apiKey, model, background) {
-  const el = document.getElementById(pathStageDomId(index));
   try {
     const record = await generateStageKeyQuestions(stage, apiKey, model, background);
+    currentPathStageRecords[index] = record;
+    const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-questions-body').innerHTML = renderPathStageQuestionsPreviewHtml(record);
   } catch (e) {
+    const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-questions-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
       <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStageQuestions(${index})">Retry key questions</button></div>`;
@@ -682,12 +778,14 @@ async function generateAndRenderStageQuestions(stage, index, apiKey, model, back
 }
 
 async function generateAndRenderStageReadingList(stage, index, apiKey, model, background) {
-  const el = document.getElementById(pathStageDomId(index));
   try {
     const record = await generateStageReadingList(stage, apiKey, model, background);
+    currentPathStageRecords[index] = record;
+    const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-reading-body').innerHTML = `<h4 style="color:var(--accent2);font-size:0.9em;margin-bottom:8px">📖 Complete reading list</h4>${renderQuestionReadingListHtml(record.stageReadingList)}`;
   } catch (e) {
+    const el = document.getElementById(pathStageDomId(index));
     if (!el) return;
     el.querySelector('.stage-reading-body').innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
       <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStageReadingList(${index})">Retry reading list</button></div>`;
@@ -699,6 +797,73 @@ async function generateAndRenderStageReadingList(stage, index, apiKey, model, ba
 // call and there is exactly one path visible at a time.
 let currentPathStages = null;
 let currentPathBackground = '';
+let currentPathView = 'linear'; // 'linear' | 'graph'
+// Parallel array to currentPathStages, set once a stage's record is first
+// fetched/created (by whichever of generateAndRenderStageQuestions/
+// generateAndRenderStageReadingList resolves first). Since both share the
+// SAME record object reference (see ensureStageNodeRecord's dedup above),
+// later mutations from the other generator are visible through this same
+// entry automatically — switching views just re-reads it, no re-fetch.
+let currentPathStageRecords = [];
+
+// Longest-path level assignment from each prerequisite's resolved
+// dependencies (used by the Graph view to group stages into rows — same
+// row = parallel, later row = depends on an earlier row). A cycle guard
+// (the `visiting` set) cuts any back-edge rather than recursing forever;
+// this is a defensive fallback for a malformed/hallucinated dependency
+// loop, not expected in normal model output.
+function computeStageLevels(stages) {
+  const prereqIndices = [];
+  const nameToIndex = new Map();
+  stages.forEach((s, i) => {
+    if (s.kind === 'prerequisite') {
+      prereqIndices.push(i);
+      nameToIndex.set(normalizeForMatch(s.name), i);
+    }
+  });
+
+  const deps = new Map();
+  for (const i of prereqIndices) {
+    const raw = Array.isArray(stages[i].dependsOn) ? stages[i].dependsOn : [];
+    const resolved = [];
+    for (const name of raw) {
+      const depIndex = nameToIndex.get(normalizeForMatch(name));
+      if (depIndex !== undefined && depIndex !== i) resolved.push(depIndex);
+    }
+    deps.set(i, resolved);
+  }
+
+  const memo = new Map();
+  function levelOf(i, visiting) {
+    if (memo.has(i)) return memo.get(i);
+    if (visiting.has(i)) return 0;
+    visiting.add(i);
+    let level = 0;
+    for (const d of (deps.get(i) || [])) {
+      level = Math.max(level, 1 + levelOf(d, visiting));
+    }
+    visiting.delete(i);
+    memo.set(i, level);
+    return level;
+  }
+
+  const levels = new Array(stages.length).fill(0);
+  let maxPrereqLevel = -1;
+  for (const i of prereqIndices) {
+    const lvl = levelOf(i, new Set());
+    levels[i] = lvl;
+    if (lvl > maxPrereqLevel) maxPrereqLevel = lvl;
+  }
+
+  const targetLevel = maxPrereqLevel + 1;
+  const targetIndex = stages.findIndex(s => s.kind === 'target');
+  if (targetIndex !== -1) levels[targetIndex] = targetLevel;
+  stages.forEach((s, i) => {
+    if (s.kind === 'frontier') levels[i] = targetLevel + 1;
+  });
+
+  return levels;
+}
 
 function retryPathStageQuestions(index) {
   const apiKey = requireApiKey();
@@ -1527,13 +1692,22 @@ Return ONLY a single JSON object (no markdown fences, no commentary) with this e
 
 {
   "prerequisites": [
-    {"name": "Clean short topic name", "description": "1-2 sentences: what this covers and why it's needed before ${JSON.stringify(topic)}"}
+    {"name": "Clean short topic name", "description": "1-2 sentences: what this covers and why it's needed before ${JSON.stringify(topic)}", "depends_on": ["Exact name of another item in THIS SAME prerequisites array that must genuinely be learned first"]}
   ]
 }
 
-Order matters — earliest/most foundational first. Include every genuine prerequisite, but do not pad
-with near-duplicates or overly narrow sub-steps; each entry should be a real, recognizable topic in its
-own right (the kind of thing that could itself be a subject heading), not a granular lesson-plan step.`;
+"depends_on" is the real dependency structure, not just a reading order — think carefully about which
+items GENUINELY require which others, not just which one you happened to list first. Many pairs of
+items are independent of each other (e.g. two different foundational topics that don't depend on one
+another) and can both have the same, or overlapping, dependencies — do not invent a fake dependency
+just to create an order. An item with no true prerequisite among the others should have an empty
+"depends_on" array. Every name inside "depends_on" MUST be copied EXACTLY (character-for-character)
+from another item's "name" field in this same array — never reference the topic itself
+(${JSON.stringify(topic)}) or anything outside this list.
+
+Include every genuine prerequisite, but do not pad with near-duplicates or overly narrow sub-steps;
+each entry should be a real, recognizable topic in its own right (the kind of thing that could itself
+be a subject heading), not a granular lesson-plan step.`;
 }
 
 function extractJson(text) {
