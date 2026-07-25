@@ -160,7 +160,14 @@
   .path-stage .stage-actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
   .path-stage-kind { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.04em; }
   .path-view-toggle { display: flex; gap: 6px; margin: 12px 0; }
-  .path-graph { max-width: 100%; overflow-x: auto; margin-top: 8px; }
+  .path-graph { max-width: 100%; overflow-x: auto; margin-top: 8px; position: relative; }
+  .path-graph-svg { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 0; }
+  .path-graph-row, .path-ladder-rung { position: relative; z-index: 1; }
+  .work-dependency-line { fill: none; stroke: var(--accent); stroke-width: 2; opacity: 0; transition: opacity 0.12s; }
+  .work-dependency-line.highlighted { opacity: 0.85; }
+  .work-arrowhead-fill { fill: var(--accent); }
+  .path-graph-card.work-highlighted { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .work-graph-card { cursor: pointer; }
   .path-graph-row { display: flex; gap: 14px; align-items: flex-start; margin-bottom: 22px; padding-bottom: 22px; border-bottom: 1px dashed var(--border); flex-wrap: wrap; }
   .path-graph-row:last-child { border-bottom: none; }
   .path-graph-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; min-width: 220px; max-width: 260px; }
@@ -802,6 +809,8 @@ async function generateSignificantWorks() {
   if (myGeneration === currentPathGeneration && currentPathView === 'works') {
     const resultEl = document.getElementById('pathStagesContainer');
     if (resultEl) resultEl.innerHTML = buildWorksContainerHtml();
+    drawWorkDependencyLines();
+    ensureWorkDependencyLinesRedrawOnResize();
   }
 }
 
@@ -823,6 +832,136 @@ function computeWorkLadderRows(works) {
   return sortedLevels.map(lvl => byLevel.get(lvl));
 }
 
+// Draws a real arrow from every prerequisite's card to what depends on it,
+// layered over the existing tier-row layout (drawn AFTER the tier grouping
+// so the rows still convey the coarse structure, with arrows adding the
+// exact edges within/across them). Must run after buildWorksContainerHtml()'s
+// output is actually in the DOM — reading offsetLeft/offsetTop below forces
+// a layout pass, so a plain synchronous call right after setting innerHTML
+// is sufficient, no requestAnimationFrame needed. Uses the SAME
+// resolveDependencyIndices()/workDependencyKey() matching as tier
+// assignment, so an arrow can never point at a different work than the one
+// the tier was actually computed against (this is exactly the title-
+// collision bug class already fixed once — reusing the shared resolver
+// instead of re-deriving indices here keeps that fix in one place).
+function drawWorkDependencyLines() {
+  const container = document.querySelector('.path-graph');
+  const svg = document.getElementById('workDependencySvg');
+  if (!container || !svg) return;
+
+  const works = currentPathSignificantWorks || [];
+  const deps = resolveDependencyIndices(works, workDependencyKey, w => w.dependsOn);
+
+  // Size the SVG canvas to the full scrollable content (not just the
+  // visible viewport) so lines stay correctly positioned when scrolled —
+  // .path-graph has overflow-x:auto for wide tiers.
+  svg.setAttribute('width', container.scrollWidth);
+  svg.setAttribute('height', container.scrollHeight);
+  svg.innerHTML = '<defs><marker id="workArrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" class="work-arrowhead-fill"></path></marker></defs>';
+
+  works.forEach((w, i) => {
+    const targetEl = document.getElementById('work-card-' + i);
+    if (!targetEl) return;
+    const targetX = targetEl.offsetLeft + targetEl.offsetWidth / 2;
+    const targetY = targetEl.offsetTop;
+
+    for (const depIndex of (deps.get(i) || [])) {
+      const sourceEl = document.getElementById('work-card-' + depIndex);
+      if (!sourceEl) continue;
+      const sourceX = sourceEl.offsetLeft + sourceEl.offsetWidth / 2;
+      const sourceY = sourceEl.offsetTop + sourceEl.offsetHeight;
+
+      // A vertical S-curve (bezier) reads more clearly than a straight line
+      // when many arrows converge on/fan out from the same card.
+      const midY = (sourceY + targetY) / 2;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', `M ${sourceX} ${sourceY} C ${sourceX} ${midY}, ${targetX} ${midY}, ${targetX} ${targetY}`);
+      path.setAttribute('class', 'work-dependency-line');
+      path.setAttribute('marker-end', 'url(#workArrowhead)');
+      // Tagged for setupWorkGraphHighlighting() below — with 50+ edges in
+      // a real path, showing every line at once is unreadable (confirmed
+      // live), so lines stay hidden until their card is hovered/clicked.
+      path.dataset.source = String(depIndex);
+      path.dataset.target = String(i);
+      svg.appendChild(path);
+    }
+  });
+
+  setupWorkGraphHighlighting(container);
+}
+
+// Lines are hidden by default (see .work-dependency-line CSS) and only
+// shown for the work currently hovered or clicked — hovering shows them
+// live; clicking "pins" a work so its lines stay visible without holding
+// the mouse there (also the only way to see them on touch devices).
+// Re-attached on every drawWorkDependencyLines() call, but .path-graph is
+// a fresh element each render (buildWorksContainerHtml() output replaces
+// it wholesale), so old listeners are garbage-collected with it, not
+// accumulated.
+function setupWorkGraphHighlighting(container) {
+  let pinnedIndex = null;
+
+  function applyHighlight(index) {
+    const svg = document.getElementById('workDependencySvg');
+    if (!svg) return;
+    svg.querySelectorAll('.work-dependency-line').forEach(path => {
+      const related = path.dataset.source === index || path.dataset.target === index;
+      path.classList.toggle('highlighted', related);
+    });
+    container.querySelectorAll('.path-graph-card').forEach(card => {
+      const cardIndex = card.id.replace('work-card-', '');
+      const related = cardIndex === index || svg.querySelector(
+        `.work-dependency-line.highlighted[data-source="${cardIndex}"], .work-dependency-line.highlighted[data-target="${cardIndex}"]`
+      );
+      card.classList.toggle('work-highlighted', !!related);
+    });
+  }
+
+  function clearHighlight() {
+    const svg = document.getElementById('workDependencySvg');
+    if (svg) svg.querySelectorAll('.work-dependency-line.highlighted').forEach(p => p.classList.remove('highlighted'));
+    container.querySelectorAll('.path-graph-card.work-highlighted').forEach(c => c.classList.remove('work-highlighted'));
+  }
+
+  container.addEventListener('mouseover', (e) => {
+    if (pinnedIndex !== null) return;
+    const card = e.target.closest('.path-graph-card');
+    if (card) applyHighlight(card.id.replace('work-card-', ''));
+  });
+
+  container.addEventListener('mouseout', (e) => {
+    if (pinnedIndex !== null) return;
+    if (e.target.closest('.path-graph-card')) clearHighlight();
+  });
+
+  container.addEventListener('click', (e) => {
+    if (e.target.closest('a, button')) return; // don't hijack real links/buttons
+    const card = e.target.closest('.path-graph-card');
+    if (!card) return;
+    const index = card.id.replace('work-card-', '');
+    if (pinnedIndex === index) {
+      pinnedIndex = null;
+      clearHighlight();
+    } else {
+      pinnedIndex = index;
+      applyHighlight(index);
+    }
+  });
+}
+
+let workDependencyLinesResizeHandlerAttached = false;
+function ensureWorkDependencyLinesRedrawOnResize() {
+  if (workDependencyLinesResizeHandlerAttached) return;
+  workDependencyLinesResizeHandlerAttached = true;
+  let resizeTimer = null;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (currentPathView === 'works' && currentPathSignificantWorksGenerated) drawWorkDependencyLines();
+    }, 150);
+  });
+}
+
 // "Why is this book in this tier" — derived directly from the real
 // dependsOn data already used to compute the tier itself, not a separate
 // LLM-written explanation that could drift from the actual graph. A work
@@ -833,7 +972,12 @@ function buildTierRationale(w) {
   if (deps.length === 0) {
     return 'Starting point — no prerequisites among the selected works.';
   }
-  return 'Here because it builds on: ' + deps.join(', ');
+  // dependsOn entries are "title — author" (see workDependencyKey/the
+  // prompt) so title-collisions between different real works resolve
+  // correctly; strip the " — author" suffix here for a cleaner reading
+  // note, matching still happens on the full string elsewhere.
+  const titles = deps.map(d => String(d).split(' — ')[0].trim());
+  return 'Here because it builds on: ' + titles.join(', ');
 }
 
 function buildWorksContainerHtml() {
@@ -843,7 +987,10 @@ function buildWorksContainerHtml() {
       return '<p class="node-desc">No works were flagged as significant enough for a path-wide ladder.</p>';
     }
     const rows = computeWorkLadderRows(works);
-    let html = '<div class="path-graph">';
+    // SVG overlay for drawWorkDependencyLines() to draw into, positioned via
+    // .path-graph's CSS position:relative — id'd so it can be located and
+    // redrawn without rebuilding the whole card layout.
+    let html = '<div class="path-graph"><svg id="workDependencySvg" class="path-graph-svg"></svg>';
     rows.forEach((row, rowIndex) => {
       const tier = rowIndex + 1;
       html += `<div class="path-ladder-rung">Tier ${tier} of ${rows.length}${rowIndex === 0 ? ' — read these first' : ' — read after Tier ' + rowIndex + ' is done'}${row.length > 1 ? ' (any order within this tier)' : ''}${rowIndex === rows.length - 1 ? ' · most advanced' : ''}</div>`;
@@ -851,7 +998,8 @@ function buildWorksContainerHtml() {
       row.forEach((w, posIndex) => {
         const label = tier + '.' + (posIndex + 1);
         const kindLabel = w.landmark === true ? 'LANDMARK' : (Array.isArray(w.stages) && w.stages.length > 1 ? 'CROSS-CUTTING' : 'SIGNIFICANT');
-        html += `<div class="path-graph-card">
+        const globalIndex = works.indexOf(w);
+        html += `<div class="path-graph-card work-graph-card" id="work-card-${globalIndex}">
           <div class="path-stage-kind">${label} · ${kindLabel}</div>
           <div class="stage-name">${escHtml(w.title || '')}</div>
           <div class="stage-desc">${escHtml(w.author || '')}</div>
@@ -886,6 +1034,10 @@ function switchPathView(view) {
     container.innerHTML = buildGraphContainerHtml(currentPathStages);
   } else {
     container.innerHTML = buildWorksContainerHtml();
+    if (currentPathSignificantWorksGenerated) {
+      drawWorkDependencyLines();
+      ensureWorkDependencyLinesRedrawOnResize();
+    }
   }
 
   if (view !== 'linear' && view !== 'graph') return;
@@ -1003,16 +1155,14 @@ let currentPathSignificantWorksGenerated = false;
 // entry automatically — switching views just re-reads it, no re-fetch.
 let currentPathStageRecords = [];
 
-// Generic longest-path level assignment from a `dependsOn`-style field
-// referencing other items' names WITHIN THE SAME LIST (case-insensitive;
-// self-references and names that don't match anything in `items` are
-// dropped). Same row/level = parallel; a later level = depends on an
-// earlier one. A cycle guard (the `visiting` set) cuts any back-edge
-// rather than recursing forever — a defensive fallback for a malformed/
-// hallucinated dependency loop, not expected in normal model output.
-// Shared by computeStageLevels() (concepts) and computeWorkLevels() (the
-// knowledge-ladder works) so both graphs use identical, tested logic.
-function computeLevelsFromDependencies(items, getName, getDependsOn) {
+// Resolves each item's raw dependsOn names into validated indices within
+// the SAME list (case-insensitive; self-references and unmatched names
+// dropped). Shared by computeLevelsFromDependencies() (tier assignment,
+// used by both computeStageLevels() and computeWorkLevels()) and
+// drawWorkDependencyLines() (arrow drawing) so all three use the exact
+// same matching — a mismatch would draw an arrow to a different work
+// than the one the tier was actually computed against.
+function resolveDependencyIndices(items, getName, getDependsOn) {
   const nameToIndex = new Map();
   items.forEach((item, i) => nameToIndex.set(normalizeForMatch(getName(item)), i));
 
@@ -1026,6 +1176,17 @@ function computeLevelsFromDependencies(items, getName, getDependsOn) {
     }
     deps.set(i, resolved);
   });
+  return deps;
+}
+
+// Generic longest-path level assignment over resolveDependencyIndices()'s
+// output. Same level = parallel; a later level = depends on an earlier
+// one. A cycle guard (the `visiting` set) cuts any back-edge rather than
+// recursing forever — a defensive fallback for a malformed/hallucinated
+// dependency loop, not expected in normal model output. Shared by
+// computeStageLevels() (concepts) and computeWorkLevels() (works).
+function computeLevelsFromDependencies(items, getName, getDependsOn) {
+  const deps = resolveDependencyIndices(items, getName, getDependsOn);
 
   const memo = new Map();
   function levelOf(i, visiting) {
@@ -1071,11 +1232,21 @@ function computeStageLevels(stages) {
   return levels;
 }
 
+// Physics/math textbooks frequently share an identical short title across
+// different authors (three different real books are all literally titled
+// "Quantum Optics" in one observed run) — matching depends_on by title
+// alone silently conflates them into one node, producing false edges
+// (including apparent self-references). Title+author together is the
+// disambiguating key throughout the work ladder.
+function workDependencyKey(w) {
+  return (w.title || '') + ' — ' + (w.author || '');
+}
+
 // Works: every significant work carries real depends_on data from
 // buildSignificantWorksPrompt's Step 2 — no special-casing needed, unlike
 // concepts' target/frontier structure.
 function computeWorkLevels(works) {
-  return computeLevelsFromDependencies(works, w => w.title, w => w.dependsOn);
+  return computeLevelsFromDependencies(works, workDependencyKey, w => w.dependsOn);
 }
 
 function retryPathStageQuestions(index) {
@@ -1833,22 +2004,39 @@ each time (edition, subtitle, punctuation, author name format).
 ${itemsBlock}
 
 Step 1 — identify the SIGNIFICANT works worth surfacing in a single global "knowledge ladder" spanning
-the whole path. Most works above are perfectly good but ordinary entries that do NOT belong here — only
-include a work if EITHER:
+the whole path — a ladder people actually READ from, in order, to learn and then do research in this
+field. Most works above are perfectly good but ordinary entries that do NOT belong here — only include a
+work if EITHER:
 - it's genuinely the SAME real work independently picked for 2+ different concepts above (merge those
   into one entry listing every concept it was picked for), OR
-- it's a landmark/canonical work in its field — the kind of text a well-read person in that area would
-  be expected to know — even if it was only picked for one concept.
+- it's a landmark/canonical PEDAGOGICAL textbook, or an influential research MONOGRAPH/paper — the kind
+  of text someone is actually assigned, or actually reads to learn or work in the field today — even if
+  it was only picked for one concept.
 
-Step 2 — for ONLY the works you selected in Step 1, identify genuine "builds upon" prerequisite
-relationships AMONG THEM (not the full list above, just your selected set). Think in terms of a real
-multi-step chain wherever the material genuinely has one — do NOT default to a flat two-level split
-("foundational" vs "everything else"). If work C genuinely requires work B, which itself genuinely
-requires work A, say so explicitly (C depends_on B, B depends_on A) rather than collapsing C straight
-onto A. At the same time, do not invent a fake dependency just to create more levels — many works are
-genuinely independent of each other and belong at the same depth. A landmark introductory text will
-typically have no dependencies within this set; a highly specialized or synthesizing work may genuinely
-depend on several others.
+For the landmark criterion specifically: EXCLUDE historical curiosities — original historical source
+texts (e.g. Euclid's actual "Elements", Newton's original "Principia"/"Method of Fluxions", Archimedes'
+original works), biographies, and "history of X" / "development of X" books ABOUT the field. These are
+real and were probably picked for good reason, but nobody uses them to actually learn or do the subject
+today — a modern reader learns calculus from a calculus textbook, not from Newton's 1671 manuscript. Only
+include a work here if it's something a student or working researcher would concretely be handed today.
+
+Step 2 — for the works you selected in Step 1, identify genuine "builds upon" prerequisite relationships.
+Think in terms of a real multi-step chain wherever the material genuinely has one — do NOT default to a
+flat two-level split ("foundational" vs "everything else"). If work C genuinely requires work B, which
+itself genuinely requires work A, say so explicitly (C depends_on B, B depends_on A) rather than
+collapsing C straight onto A. At the same time, do not invent a fake dependency just to create more
+levels — many works are genuinely independent of each other and belong at the same depth.
+
+IMPORTANT — landmark works are usually NOT zero-prerequisite starting points. A landmark/canonical text
+typically assumes a substantial body of prior material (e.g. a real-analysis textbook assumes calculus
+and rigorous proof-writing) — it's just that its true prerequisite is often an ordinary, unremarkable
+textbook that would never independently qualify as "significant" in Step 1. When that's the case, ADD
+that prerequisite work to your output too, even though it wouldn't have made the cut on its own —
+mark it "landmark": false and explain in "why_significant" that it's included because a landmark work
+depends on it. Do not let a landmark work end up with an empty depends_on just because its real
+prerequisite wasn't independently remarkable — pull the prerequisite in. Only leave depends_on genuinely
+empty when the work really is foundational within this whole subject (e.g. it assumes only general
+background, not another specific work from this list).
 
 The single most common mistake here is pairing two works because they're both "classic" or
 "foundational" in a general sense, NOT because one's actual content requires the other's. Before adding
@@ -1863,13 +2051,19 @@ Return ONLY a single JSON object (no markdown fences, no commentary) with this e
 
 {
   "significant_works": [
-    {"title": "canonical title", "author": "canonical author", "stages": ["Exact concept name(s) as given above"], "landmark": true or false, "why_significant": "1 sentence: why this belongs in the global ladder", "depends_on": ["Exact title of another work in THIS SAME significant_works list that must genuinely be read first"]}
+    {"title": "canonical title", "author": "canonical author", "stages": ["Exact concept name(s) as given above"], "landmark": true or false, "why_significant": "1 sentence: why this belongs in the global ladder", "depends_on": ["Exact \"title — author\" of another entry in THIS SAME significant_works list, joined with an em dash exactly like that, that must genuinely be read first"]}
   ]
 }
 
-Every name inside "stages" and "depends_on" must be copied EXACTLY (character-for-character) — "stages"
-from the "picked for" labels above, "depends_on" from another entry's own "title" in this same output
-list (never reference a work outside this list, and never reference itself).`;
+"stages" must be copied EXACTLY (character-for-character) from the "picked for" labels above. Different
+real works can have the identical short title (e.g. multiple different textbooks are literally titled
+just "Quantum Optics") — a "depends_on" entry that gave only the title would then be genuinely
+ambiguous about which one is meant. So every "depends_on" entry must be formatted as
+"<exact title> — <exact author>" (title, then an em dash " — ", then author), copied character-for-
+character from that same entry's own "title" and "author" fields elsewhere in your output — including
+any prerequisite work you pulled in per the rule above that wasn't independently selected in Step 1.
+Never reference a work that isn't a real work from the numbered list at the top of this prompt, and
+never reference a work's own title+author as its own dependency.`;
 }
 
 function buildResearchQuestionsPrompt(topic, path, grounding) {
