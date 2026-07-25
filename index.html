@@ -472,6 +472,8 @@ async function buildLearningPath(target, background) {
   const cacheKey = pathCacheKey(target, background);
   const cached = await dbGetPath(cacheKey);
   if (cached) {
+    currentPathStages = cached.stages;
+    currentPathBackground = background;
     renderPathTimeline(cached.stages, target, background);
     return;
   }
@@ -540,13 +542,138 @@ async function buildLearningPath(target, background) {
   }
 
   await dbPutPath({ key: cacheKey, target, background, stages, generatedAt: Date.now() });
+  currentPathStages = stages;
+  currentPathBackground = background;
   renderPathTimeline(stages, target, background);
 }
 
-function renderPathTimeline(stages, target, background) {
-  // Stub — replaced with the real timeline renderer in Task 5.
-  document.getElementById('content').innerHTML = `<div class="node-header"><h2>🧭 Learning Path</h2></div>
-    <p class="node-desc">Resolved ${stages.length} stages for "${escHtml(target)}" (rendering lands in Task 5). Stage order: ${stages.map(s => escHtml(s.name) + ' [' + s.kind + (s.isRealNode ? ', real' : ', llm') + ']').join(' → ')}</p>`;
+async function ensureStageNodeRecord(stage) {
+  const key = pathKey(stage.path);
+  const existing = await dbGet(key);
+  if (existing) return existing;
+
+  let grounding = null;
+  try { grounding = await fetchWikipediaGrounding(stage.name); } catch (e) { /* optional */ }
+
+  const record = {
+    path: key,
+    name: stage.name,
+    description: '',
+    children: [],
+    groundingSource: grounding,
+    generatedAt: Date.now(),
+    keyQuestions: null,
+    keyQuestionsGenerated: false,
+    questionReadingLists: {},
+    researchQuestions: null,
+    researchQuestionsGenerated: false,
+    researchQuestionLiterature: {},
+    paradigms: null,
+    paradigmsGenerated: false,
+  };
+  if (stage.isRealNode) {
+    record.isStaticTree = true;
+    record.fieldKey = stage.fieldKey;
+  }
+  await dbPut(record);
+  return record;
+}
+
+async function generateStageKeyQuestions(stage, apiKey, model, background) {
+  const record = await ensureStageNodeRecord(stage);
+  if (record.keyQuestionsGenerated) return record;
+  const parsed = await callOpenRouter(apiKey, model, buildKeyQuestionsPrompt(stage.name, stage.path, record.groundingSource, background), 8000);
+  record.keyQuestions = parsed.key_questions || { beginner: [], intermediate: [], advanced: [] };
+  record.keyQuestionsGenerated = true;
+  record.questionReadingLists = record.questionReadingLists || {};
+  await dbPut(record);
+  return record;
+}
+
+function pathStageDomId(index) {
+  return 'path-stage-' + index;
+}
+
+async function renderPathTimeline(stages, target, background) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+
+  let html = `<div class="node-header"><h2>🧭 Learning Path: ${escHtml(target)}</h2></div><div class="path-timeline">`;
+  stages.forEach((stage, i) => {
+    html += renderPathStageShell(stage, i);
+  });
+  html += '</div>';
+  document.getElementById('content').innerHTML = html;
+
+  await Promise.all(stages.map((stage, i) => generateAndRenderStage(stage, i, apiKey, model, background)));
+}
+
+function renderPathStageShell(stage, index) {
+  const kindLabel = stage.kind === 'target' ? 'TARGET' : (stage.kind === 'prerequisite' ? 'PREREQUISITE' : 'FRONTIER / SPECIALIZATION');
+  return `<div class="path-stage ${stage.kind === 'target' ? 'target' : ''}" id="${pathStageDomId(index)}">
+    <div class="marker"></div>
+    <div class="path-stage-kind">${escHtml(kindLabel)}${stage.isRealNode ? ' · real classification node' : ''}</div>
+    <div class="stage-name">${escHtml(stage.name)}</div>
+    ${stage.description ? `<div class="stage-desc">${escHtml(stage.description)}</div>` : ''}
+    <div class="stage-body">⏳ Working out key questions…</div>
+  </div>`;
+}
+
+async function generateAndRenderStage(stage, index, apiKey, model, background) {
+  const el = document.getElementById(pathStageDomId(index));
+  try {
+    const record = await generateStageKeyQuestions(stage, apiKey, model, background);
+    if (!el) return;
+    const bodyEl = el.querySelector('.stage-body');
+    bodyEl.innerHTML = renderPathStageKeyQuestionsHtml(record, stage);
+  } catch (e) {
+    if (!el) return;
+    const bodyEl = el.querySelector('.stage-body');
+    bodyEl.innerHTML = `<div class="error">❌ ${escHtml(e.message)}</div>
+      <div style="margin-top:8px"><button class="btn btn-small" onclick="retryPathStage(${index})">Retry</button></div>`;
+  }
+}
+
+// Stages array must stay reachable for retry — stashed on window since the
+// timeline is rebuilt from a single buildLearningPath()/renderPathTimeline()
+// call and there is exactly one path visible at a time.
+let currentPathStages = null;
+let currentPathBackground = '';
+
+function retryPathStage(index) {
+  const apiKey = requireApiKey();
+  if (!apiKey) return;
+  const model = getSelectedModel();
+  const stage = currentPathStages[index];
+  const el = document.getElementById(pathStageDomId(index));
+  if (el) el.querySelector('.stage-body').innerHTML = '⏳ Working out key questions…';
+  generateAndRenderStage(stage, index, apiKey, model, currentPathBackground);
+}
+
+function renderPathStageKeyQuestionsHtml(record, stage) {
+  const counts = QUESTION_LEVELS.map(([lvl]) => (record.keyQuestions && record.keyQuestions[lvl] || []).length);
+  let html = renderKeyQuestionsHtml(record);
+  html += `<div class="stage-actions">
+    <button class="btn btn-small" onclick="openPathStageNode(${escAttr(JSON.stringify(stage))})">Open full view (reading lists, research questions, paradigms) →</button>
+  </div>`;
+  return html;
+}
+
+function openPathStageNode(stage) {
+  if (stage.isRealNode) {
+    activeMainTab = stage.fieldKey;
+    renderFieldTabs();
+    document.getElementById('exploreSidebar').style.display = 'none';
+    document.getElementById('fieldTreeSidebar').style.display = '';
+    selectFieldTreeNode(stage.fieldKey, stage.path.slice(1));
+  } else {
+    activeMainTab = 'explore';
+    renderFieldTabs();
+    document.getElementById('exploreSidebar').style.display = '';
+    document.getElementById('fieldTreeSidebar').style.display = 'none';
+    navigateTo(stage.path);
+  }
 }
 
 async function loadFieldTree(key) {
@@ -1091,12 +1218,16 @@ Rules for "children" — read carefully, this is the part that most often goes w
 - Node names must be clean short names (a few words), never full sentences or descriptions.`;
 }
 
-function buildKeyQuestionsPrompt(topic, path, grounding) {
+function buildKeyQuestionsPrompt(topic, path, grounding, background) {
   const breadcrumb = path.join(' > ');
+  const backgroundNote = (background && background.trim())
+    ? `\nThe learner has told you what they already know: "${background.trim()}" — keep beginner-level explanations appropriately brief for anything this background already covers, rather than explaining it from absolute scratch. Do not omit any question tier because of this.\n`
+    : '';
   return `You are explaining the field "${topic}" (full path: ${breadcrumb}) to someone who has never
 studied it, by identifying the real questions it is trying to answer.
 
 ${groundingBlockFor(grounding)}
+${backgroundNote}
 
 Return ONLY a single JSON object (no markdown fences, no commentary) with this exact shape:
 
